@@ -19,6 +19,9 @@ import json
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 import tempfile
+import urllib.request
+import urllib.error
+import xml.etree.ElementTree as ET
 
 import streamlit as st
 import yt_dlp
@@ -56,7 +59,7 @@ if not client.api_key:
 # ---------------------------------------------------------------------------
 
 def get_ydl_opts() -> Dict[str, Any]:
-    """yt-dlpのオプションを返す"""
+    """yt-dlpのオプションを返す（改良版：より多くの字幕形式をサポート）"""
     # Streamlit Cloud用の一時ディレクトリ
     temp_dir = tempfile.gettempdir()
     
@@ -66,18 +69,22 @@ def get_ydl_opts() -> Dict[str, Any]:
         'skip_download': True,  # 動画はダウンロードしない
         'writesubtitles': True,
         'writeautomaticsub': True,  # 自動生成字幕も取得
-        'subtitleslangs': ['en', 'en-US', 'en-GB'],  # 英語字幕を優先
-        'subtitlesformat': 'json3',  # JSON形式で取得
+        'subtitleslangs': ['en', 'en-US', 'en-GB', 'en-CA', 'en-AU', 'en-IN'],  # より多くの英語字幕
+        'subtitlesformat': 'best',  # 最適な形式を自動選択
         'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
         'cachedir': temp_dir,
         # Streamlit Cloud対策
-        'socket_timeout': 30,
-        'retries': 3,
-        'fragment_retries': 3,
+        'socket_timeout': 45,  # タイムアウトを延長
+        'retries': 5,  # リトライ回数を増加
+        'fragment_retries': 5,
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         },
+        # エラー処理の改善
+        'ignoreerrors': False,
+        'no_color': True,
         # プロキシ設定（必要に応じて）
         # 'proxy': 'http://proxy.example.com:8080',
     }
@@ -111,10 +118,59 @@ def parse_subtitle_json(subtitle_data: List[Dict[str, Any]]) -> str:
     return ' '.join(text_parts)
 
 
+def parse_non_json_subtitle(subtitle_content: str) -> str:
+    """VTT/TTML等の非JSON形式の字幕をテキストに変換"""
+    text_parts = []
+    
+    # VTT形式の場合
+    if 'WEBVTT' in subtitle_content:
+        lines = subtitle_content.split('\n')
+        for line in lines:
+            line = line.strip()
+            # タイムスタンプ行をスキップ
+            if '-->' in line or line.startswith('WEBVTT') or line.startswith('NOTE') or not line:
+                continue
+            # HTMLタグを削除
+            line = re.sub(r'<[^>]+>', '', line)
+            if line:
+                text_parts.append(line)
+    
+    # TTML形式の場合
+    elif '<tt' in subtitle_content and 'xml' in subtitle_content:
+        # 簡易的なXML解析
+        try:
+            root = ET.fromstring(subtitle_content)
+            for elem in root.iter():
+                if elem.text:
+                    text = elem.text.strip()
+                    if text:
+                        text_parts.append(text)
+        except ET.ParseError:
+            # XMLパースに失敗した場合は正規表現でテキストを抽出
+            text_parts = re.findall(r'>(.*?)</', subtitle_content)
+            text_parts = [t.strip() for t in text_parts if t.strip()]
+    
+    # SRV形式の場合（簡易的な処理）
+    else:
+        # 基本的なテキスト抽出
+        lines = subtitle_content.split('\n')
+        for line in lines:
+            line = line.strip()
+            # タイムスタンプや空行をスキップ
+            if not line or '-->' in line or line.isdigit():
+                continue
+            # HTMLタグを削除
+            line = re.sub(r'<[^>]+>', '', line)
+            if line:
+                text_parts.append(line)
+    
+    return ' '.join(text_parts)
+
+
 @st.cache_data(show_spinner=False, ttl=3600)  # 1時間キャッシュ
 def fetch_english_transcript_ytdlp(video_id: str) -> tuple[str, str]:
     """
-    yt-dlpを使って英語字幕を取得
+    yt-dlpを使って英語字幕を取得（自動生成字幕優先、複数形式サポート）
     Returns: (transcript_text, error_message)
     """
     try:
@@ -131,47 +187,71 @@ def fetch_english_transcript_ytdlp(video_id: str) -> tuple[str, str]:
             subtitles = info.get('subtitles', {})
             automatic_captions = info.get('automatic_captions', {})
             
-            # 英語字幕を探す（手動字幕優先）
-            subtitle_data = None
+            # 英語字幕を探す（自動字幕優先 + 複数形式サポート）
             subtitle_url = None
+            subtitle_source = None
             
-            # 手動字幕を確認
-            for lang in ['en', 'en-US', 'en-GB']:
-                if lang in subtitles:
-                    for sub in subtitles[lang]:
-                        if sub.get('ext') == 'json3':
-                            subtitle_url = sub['url']
+            # サポートする字幕形式（優先順位順）
+            supported_formats = ['json3', 'vtt', 'ttml', 'srv1', 'srv2', 'srv3']
+            
+            # サポートする言語コード（優先順位順）
+            supported_langs = ['en', 'en-US', 'en-GB', 'en-CA', 'en-AU', 'en-IN']
+            
+            # 1. 自動生成字幕を最優先で確認（より確実に存在する）
+            for lang in supported_langs:
+                if lang in automatic_captions:
+                    for fmt in supported_formats:
+                        for sub in automatic_captions[lang]:
+                            if sub.get('ext') == fmt:
+                                subtitle_url = sub['url']
+                                subtitle_source = f"auto-{lang}-{fmt}"
+                                break
+                        if subtitle_url:
                             break
                     if subtitle_url:
                         break
             
-            # 手動字幕がない場合は自動字幕を確認
+            # 2. 自動字幕がない場合のみ手動字幕を確認
             if not subtitle_url:
-                for lang in ['en', 'en-US', 'en-GB']:
-                    if lang in automatic_captions:
-                        for sub in automatic_captions[lang]:
-                            if sub.get('ext') == 'json3':
-                                subtitle_url = sub['url']
+                for lang in supported_langs:
+                    if lang in subtitles:
+                        for fmt in supported_formats:
+                            for sub in subtitles[lang]:
+                                if sub.get('ext') == fmt:
+                                    subtitle_url = sub['url']
+                                    subtitle_source = f"manual-{lang}-{fmt}"
+                                    break
+                            if subtitle_url:
                                 break
                         if subtitle_url:
                             break
             
             if not subtitle_url:
-                return "", "英語字幕が見つかりませんでした。この動画には英語字幕が設定されていない可能性があります。"
+                # デバッグ情報を追加
+                debug_info = f"利用可能な字幕: 手動={list(subtitles.keys())}, 自動={list(automatic_captions.keys())}"
+                return "", f"英語字幕が見つかりませんでした。{debug_info}"
             
             # 字幕データをダウンロード
-            import urllib.request
-            with urllib.request.urlopen(subtitle_url) as response:
-                subtitle_json = json.loads(response.read().decode('utf-8'))
-            
-            # 字幕をテキストに変換
-            if 'events' in subtitle_json:
-                transcript_text = parse_subtitle_json(subtitle_json['events'])
-            else:
-                transcript_text = parse_subtitle_json(subtitle_json)
+            try:
+                with urllib.request.urlopen(subtitle_url) as response:
+                    subtitle_content = response.read().decode('utf-8')
+                    
+                # 形式に応じて処理
+                if 'json3' in subtitle_source:
+                    subtitle_json = json.loads(subtitle_content)
+                    if 'events' in subtitle_json:
+                        transcript_text = parse_subtitle_json(subtitle_json['events'])
+                    else:
+                        transcript_text = parse_subtitle_json(subtitle_json)
+                else:
+                    # VTT, TTML等の場合は簡易パーサーを使用
+                    transcript_text = parse_non_json_subtitle(subtitle_content)
+                    
+            except urllib.error.URLError as e:
+                return "", f"字幕ダウンロードエラー: {str(e)}"
             
             if not transcript_text:
-                return "", "字幕データの解析に失敗しました。"
+                return "", f"字幕データの解析に失敗しました。ソース: {subtitle_source}"
             
             return transcript_text, ""
             
