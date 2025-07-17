@@ -28,6 +28,7 @@ import socket
 import streamlit as st
 import yt_dlp
 import anthropic
+import requests
 from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
@@ -241,14 +242,241 @@ def parse_non_json_subtitle(subtitle_content: str) -> str:
     return ' '.join(text_parts)
 
 
+def fetch_transcript_with_requests(video_id: str) -> tuple[str, str]:
+    """
+    requestsを使用してYouTubeの内部APIから字幕を取得する高度なアプローチ
+    Chrome拡張機能が使用するのと同様の手法
+    """
+    try:
+        # YouTube視聴ページにアクセスして必要な情報を取得
+        session = requests.Session()
+        
+        # 完全なブラウザ環境を模倣
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+        }
+        
+        # YouTubeページを取得
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        response = session.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        html_content = response.text
+        
+        # 字幕情報を抽出（正規表現を使用）
+        import re
+        
+        # captionTracksを検索
+        caption_pattern = r'"captionTracks":\s*(\[.*?\])'
+        caption_match = re.search(caption_pattern, html_content)
+        
+        if not caption_match:
+            # 別のパターンを試行
+            caption_pattern = r'"captions":\s*{[^}]*"playerCaptionsTracklistRenderer":\s*{[^}]*"captionTracks":\s*(\[.*?\])'
+            caption_match = re.search(caption_pattern, html_content)
+        
+        if not caption_match:
+            return "", "ページから字幕情報を抽出できませんでした。"
+        
+        # JSON形式の字幕情報をパース
+        captions_json = caption_match.group(1)
+        
+        # 文字列を適切にエスケープしてJSONとして解析
+        captions_json = captions_json.replace('\\', '\\\\').replace('\\"', '"')
+        
+        try:
+            import json
+            captions_data = json.loads(captions_json)
+        except json.JSONDecodeError:
+            # 手動でパースを試行
+            captions_data = []
+            url_pattern = r'"baseUrl":"([^"]+)"'
+            lang_pattern = r'"languageCode":"([^"]+)"'
+            
+            urls = re.findall(url_pattern, captions_json)
+            langs = re.findall(lang_pattern, captions_json)
+            
+            for url, lang in zip(urls, langs):
+                if lang.startswith('en'):
+                    captions_data.append({
+                        'baseUrl': url.replace('\\u0026', '&'),
+                        'languageCode': lang
+                    })
+        
+        # 英語字幕を検索
+        english_caption_url = None
+        for caption in captions_data:
+            if isinstance(caption, dict):
+                lang_code = caption.get('languageCode', '')
+                if lang_code.startswith('en'):
+                    english_caption_url = caption.get('baseUrl', '')
+                    break
+        
+        if not english_caption_url:
+            return "", "英語字幕URLが見つかりませんでした。"
+        
+        # 字幕XMLを取得
+        caption_response = session.get(english_caption_url, headers=headers, timeout=30)
+        caption_response.raise_for_status()
+        
+        # XML形式の字幕をパース
+        caption_xml = caption_response.text
+        
+        # XML から テキストを抽出
+        text_pattern = r'<text[^>]*>(.*?)</text>'
+        text_matches = re.findall(text_pattern, caption_xml, re.DOTALL)
+        
+        if not text_matches:
+            return "", "字幕テキストを抽出できませんでした。"
+        
+        # HTMLエンティティをデコード
+        import html
+        transcript_parts = []
+        for match in text_matches:
+            # HTMLタグを除去
+            clean_text = re.sub(r'<[^>]+>', '', match)
+            # HTMLエンティティをデコード
+            clean_text = html.unescape(clean_text)
+            if clean_text.strip():
+                transcript_parts.append(clean_text.strip())
+        
+        transcript_text = ' '.join(transcript_parts)
+        
+        if not transcript_text:
+            return "", "字幕テキストが空でした。"
+        
+        return transcript_text, ""
+        
+    except requests.exceptions.RequestException as e:
+        return "", f"リクエストエラー: {str(e)}"
+    except Exception as e:
+        return "", f"予期しないエラー: {type(e).__name__}: {str(e)}"
+
+
+def fetch_transcript_youtube_api(video_id: str) -> tuple[str, str]:
+    """
+    YouTubeの内部APIを直接呼び出す手法
+    """
+    try:
+        session = requests.Session()
+        
+        # 最新のヘッダーを設定
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Origin': 'https://www.youtube.com',
+            'Referer': f'https://www.youtube.com/watch?v={video_id}',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
+        }
+        
+        # YouTube内部APIエンドポイント
+        api_url = f"https://www.youtube.com/youtubei/v1/player"
+        
+        # APIリクエストのペイロード
+        payload = {
+            'context': {
+                'client': {
+                    'clientName': 'WEB',
+                    'clientVersion': '2.20231219.04.00',
+                }
+            },
+            'videoId': video_id,
+            'params': 'CgIQAQ%3D%3D'  # 字幕パラメータ
+        }
+        
+        response = session.post(api_url, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        player_data = response.json()
+        
+        # 字幕情報を抽出
+        captions = player_data.get('captions', {})
+        caption_tracks = captions.get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
+        
+        # 英語字幕を検索
+        english_caption_url = None
+        for track in caption_tracks:
+            if track.get('languageCode', '').startswith('en'):
+                english_caption_url = track.get('baseUrl', '')
+                break
+        
+        if not english_caption_url:
+            return "", "API経由で英語字幕が見つかりませんでした。"
+        
+        # 字幕XMLを取得
+        caption_response = session.get(english_caption_url, headers=headers, timeout=30)
+        caption_response.raise_for_status()
+        
+        # XMLをパース
+        caption_xml = caption_response.text
+        text_pattern = r'<text[^>]*>(.*?)</text>'
+        text_matches = re.findall(text_pattern, caption_xml, re.DOTALL)
+        
+        if not text_matches:
+            return "", "API経由で字幕テキストを抽出できませんでした。"
+        
+        # テキストを結合
+        import html
+        transcript_parts = []
+        for match in text_matches:
+            clean_text = re.sub(r'<[^>]+>', '', match)
+            clean_text = html.unescape(clean_text)
+            if clean_text.strip():
+                transcript_parts.append(clean_text.strip())
+        
+        transcript_text = ' '.join(transcript_parts)
+        
+        if not transcript_text:
+            return "", "API経由で取得した字幕テキストが空でした。"
+        
+        return transcript_text, ""
+        
+    except requests.exceptions.RequestException as e:
+        return "", f"API リクエストエラー: {str(e)}"
+    except Exception as e:
+        return "", f"API 予期しないエラー: {type(e).__name__}: {str(e)}"
+
+
 @st.cache_data(show_spinner=False, ttl=3600)  # 1時間キャッシュ
 def fetch_english_transcript_ytdlp(video_id: str) -> tuple[str, str]:
     """
-    yt-dlpを使って英語字幕を取得（Streamlit Community Cloud用に最適化）
+    複数の手法を組み合わせて字幕を取得（Chrome拡張機能レベルの信頼性）
     Returns: (transcript_text, error_message)
     """
     
-    # 複数の手法で字幕取得を試行
+    # 高度なアプローチを優先的に試行
+    advanced_methods = [
+        ('requests_html', lambda: fetch_transcript_with_requests(video_id)),
+        ('youtube_api', lambda: fetch_transcript_youtube_api(video_id)),
+    ]
+    
+    # 高度な手法を試行
+    for method_name, method_func in advanced_methods:
+        try:
+            transcript, error = method_func()
+            if transcript:
+                return transcript, ""
+        except Exception as e:
+            continue  # 次の手法を試行
+    
+    # yt-dlpのフォールバック
     methods = [
         ('primary', get_ydl_opts()),
         ('fallback1', get_fallback_ydl_opts()),
@@ -353,7 +581,7 @@ def fetch_english_transcript_ytdlp(video_id: str) -> tuple[str, str]:
             continue  # 次の手法を試行
     
     # すべての手法が失敗した場合
-    return "", "Cloud環境での字幕取得に失敗しました。「英語字幕を直接入力」オプションをお試しください。"
+    return "", "すべての字幕取得方法が失敗しました。「英語字幕を直接入力」オプションをお試しください。"
 
 
 def translate_to_japanese(text: str) -> str:
