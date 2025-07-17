@@ -22,6 +22,8 @@ import tempfile
 import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
+import ssl
+import socket
 
 import streamlit as st
 import yt_dlp
@@ -59,34 +61,106 @@ if not client.api_key:
 # ---------------------------------------------------------------------------
 
 def get_ydl_opts() -> Dict[str, Any]:
-    """yt-dlpのオプションを返す（改良版：より多くの字幕形式をサポート）"""
+    """yt-dlpのオプションを返す（Streamlit Community Cloud用に最適化）"""
     # Streamlit Cloud用の一時ディレクトリ
+    temp_dir = tempfile.gettempdir()
+    
+    # Cloud環境での字幕取得を最適化
+    base_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'skip_download': True,
+        'writesubtitles': True,
+        'writeautomaticsub': True,
+        'subtitleslangs': ['en', 'en-US', 'en-GB', 'en-CA', 'en-AU', 'en-IN'],
+        'subtitlesformat': 'best',
+        'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
+        'cachedir': temp_dir,
+        
+        # Streamlit Cloud対策を強化
+        'socket_timeout': 60,
+        'retries': 8,
+        'fragment_retries': 8,
+        'extractor_retries': 3,
+        'retry_sleep': 2,
+        
+        # Cloud環境向けヘッダー設定
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+        },
+        
+        # ネットワーク設定
+        'prefer_insecure': False,
+        'call_home': False,
+        'no_color': True,
+        'no_check_certificate': False,
+        'geo_bypass': True,
+        'geo_bypass_country': 'US',
+        
+        # エラー処理
+        'ignoreerrors': False,
+        'abort_on_unavailable_fragment': False,
+        'keep_fragments': False,
+        
+        # パフォーマンス最適化
+        'concurrent_fragment_downloads': 1,
+        'buffer_size': 1024,
+        'http_chunk_size': 10485760,
+    }
+    
+    return base_opts
+
+
+def get_fallback_ydl_opts() -> Dict[str, Any]:
+    """フォールバック用のyt-dlpオプション（より保守的な設定）"""
     temp_dir = tempfile.gettempdir()
     
     return {
         'quiet': True,
         'no_warnings': True,
-        'skip_download': True,  # 動画はダウンロードしない
+        'skip_download': True,
         'writesubtitles': True,
-        'writeautomaticsub': True,  # 自動生成字幕も取得
-        'subtitleslangs': ['en', 'en-US', 'en-GB', 'en-CA', 'en-AU', 'en-IN'],  # より多くの英語字幕
-        'subtitlesformat': 'best',  # 最適な形式を自動選択
+        'writeautomaticsub': True,
+        'subtitleslangs': ['en'],
+        'subtitlesformat': 'vtt',
         'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
         'cachedir': temp_dir,
-        # Streamlit Cloud対策
-        'socket_timeout': 45,  # タイムアウトを延長
-        'retries': 5,  # リトライ回数を増加
-        'fragment_retries': 5,
+        'socket_timeout': 30,
+        'retries': 3,
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'User-Agent': 'yt-dlp/2023.12.30',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.5',
         },
-        # エラー処理の改善
-        'ignoreerrors': False,
         'no_color': True,
-        # プロキシ設定（必要に応じて）
-        # 'proxy': 'http://proxy.example.com:8080',
+        'geo_bypass': True,
+    }
+
+
+def get_minimal_ydl_opts() -> Dict[str, Any]:
+    """最小限のyt-dlpオプション（最後の手段）"""
+    temp_dir = tempfile.gettempdir()
+    
+    return {
+        'quiet': True,
+        'skip_download': True,
+        'writeautomaticsub': True,
+        'subtitleslangs': ['en'],
+        'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
+        'socket_timeout': 20,
+        'retries': 1,
+        'no_color': True,
     }
 
 # ---------------------------------------------------------------------------
@@ -170,103 +244,116 @@ def parse_non_json_subtitle(subtitle_content: str) -> str:
 @st.cache_data(show_spinner=False, ttl=3600)  # 1時間キャッシュ
 def fetch_english_transcript_ytdlp(video_id: str) -> tuple[str, str]:
     """
-    yt-dlpを使って英語字幕を取得（自動生成字幕優先、複数形式サポート）
+    yt-dlpを使って英語字幕を取得（Streamlit Community Cloud用に最適化）
     Returns: (transcript_text, error_message)
     """
-    try:
-        ydl_opts = get_ydl_opts()
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # 動画情報を取得
-            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-            
-            if not info:
-                return "", "動画情報を取得できませんでした。"
-            
-            # 字幕を確認
-            subtitles = info.get('subtitles', {})
-            automatic_captions = info.get('automatic_captions', {})
-            
-            # 英語字幕を探す（自動字幕優先 + 複数形式サポート）
-            subtitle_url = None
-            subtitle_source = None
-            
-            # サポートする字幕形式（優先順位順）
-            supported_formats = ['json3', 'vtt', 'ttml', 'srv1', 'srv2', 'srv3']
-            
-            # サポートする言語コード（優先順位順）
-            supported_langs = ['en', 'en-US', 'en-GB', 'en-CA', 'en-AU', 'en-IN']
-            
-            # 1. 自動生成字幕を最優先で確認（より確実に存在する）
-            for lang in supported_langs:
-                if lang in automatic_captions:
-                    for fmt in supported_formats:
-                        for sub in automatic_captions[lang]:
-                            if sub.get('ext') == fmt:
-                                subtitle_url = sub['url']
-                                subtitle_source = f"auto-{lang}-{fmt}"
-                                break
-                        if subtitle_url:
-                            break
-                    if subtitle_url:
-                        break
-            
-            # 2. 自動字幕がない場合のみ手動字幕を確認
-            if not subtitle_url:
+    
+    # 複数の手法で字幕取得を試行
+    methods = [
+        ('primary', get_ydl_opts()),
+        ('fallback1', get_fallback_ydl_opts()),
+        ('fallback2', get_minimal_ydl_opts())
+    ]
+    
+    for method_name, ydl_opts in methods:
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # 動画情報を取得
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                
+                if not info:
+                    continue
+                
+                # 字幕を確認
+                subtitles = info.get('subtitles', {})
+                automatic_captions = info.get('automatic_captions', {})
+                
+                # 英語字幕を探す
+                subtitle_url = None
+                subtitle_source = None
+                
+                # サポートする字幕形式（優先順位順）
+                supported_formats = ['json3', 'vtt', 'ttml', 'srv1', 'srv2', 'srv3']
+                
+                # サポートする言語コード（優先順位順）
+                supported_langs = ['en', 'en-US', 'en-GB', 'en-CA', 'en-AU', 'en-IN']
+                
+                # 1. 自動生成字幕を最優先で確認
                 for lang in supported_langs:
-                    if lang in subtitles:
+                    if lang in automatic_captions:
                         for fmt in supported_formats:
-                            for sub in subtitles[lang]:
+                            for sub in automatic_captions[lang]:
                                 if sub.get('ext') == fmt:
                                     subtitle_url = sub['url']
-                                    subtitle_source = f"manual-{lang}-{fmt}"
+                                    subtitle_source = f"auto-{lang}-{fmt}-{method_name}"
                                     break
                             if subtitle_url:
                                 break
                         if subtitle_url:
                             break
-            
-            if not subtitle_url:
-                # デバッグ情報を追加
-                debug_info = f"利用可能な字幕: 手動={list(subtitles.keys())}, 自動={list(automatic_captions.keys())}"
-                return "", f"英語字幕が見つかりませんでした。{debug_info}"
-            
-            # 字幕データをダウンロード
-            try:
-                with urllib.request.urlopen(subtitle_url) as response:
-                    subtitle_content = response.read().decode('utf-8')
+                
+                # 2. 自動字幕がない場合のみ手動字幕を確認
+                if not subtitle_url:
+                    for lang in supported_langs:
+                        if lang in subtitles:
+                            for fmt in supported_formats:
+                                for sub in subtitles[lang]:
+                                    if sub.get('ext') == fmt:
+                                        subtitle_url = sub['url']
+                                        subtitle_source = f"manual-{lang}-{fmt}-{method_name}"
+                                        break
+                                if subtitle_url:
+                                    break
+                            if subtitle_url:
+                                break
+                
+                if not subtitle_url:
+                    continue  # 次の手法を試行
+                
+                # 字幕データをダウンロード
+                try:
+                    import ssl
+                    # SSL証明書の検証を無効化（Cloud環境対応）
+                    ssl_context = ssl.create_default_context()
+                    ssl_context.check_hostname = False
+                    ssl_context.verify_mode = ssl.CERT_NONE
                     
-                # 形式に応じて処理
-                if 'json3' in subtitle_source:
-                    subtitle_json = json.loads(subtitle_content)
-                    if 'events' in subtitle_json:
-                        transcript_text = parse_subtitle_json(subtitle_json['events'])
+                    request = urllib.request.Request(subtitle_url)
+                    request.add_header('User-Agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36')
+                    
+                    with urllib.request.urlopen(request, context=ssl_context, timeout=30) as response:
+                        subtitle_content = response.read().decode('utf-8')
+                        
+                    # 形式に応じて処理
+                    if 'json3' in subtitle_source:
+                        subtitle_json = json.loads(subtitle_content)
+                        if 'events' in subtitle_json:
+                            transcript_text = parse_subtitle_json(subtitle_json['events'])
+                        else:
+                            transcript_text = parse_subtitle_json(subtitle_json)
                     else:
-                        transcript_text = parse_subtitle_json(subtitle_json)
-                else:
-                    # VTT, TTML等の場合は簡易パーサーを使用
-                    transcript_text = parse_non_json_subtitle(subtitle_content)
-                    
-            except urllib.error.URLError as e:
-                return "", f"字幕ダウンロードエラー: {str(e)}"
-            
-            if not transcript_text:
-                return "", f"字幕データの解析に失敗しました。ソース: {subtitle_source}"
-            
-            return transcript_text, ""
-            
-    except yt_dlp.utils.DownloadError as e:
-        error_msg = str(e)
-        if "Video unavailable" in error_msg:
-            return "", "動画が利用できません。非公開または削除されている可能性があります。"
-        elif "Sign in to confirm your age" in error_msg:
-            return "", "年齢制限のある動画です。字幕を取得できません。"
-        else:
-            return "", f"ダウンロードエラー: {error_msg}"
-    except json.JSONDecodeError:
-        return "", "字幕データの形式が正しくありません。"
-    except Exception as e:
-        return "", f"予期しないエラーが発生しました: {type(e).__name__}: {str(e)}"
+                        # VTT, TTML等の場合は簡易パーサーを使用
+                        transcript_text = parse_non_json_subtitle(subtitle_content)
+                        
+                    if transcript_text:
+                        return transcript_text, ""
+                        
+                except (urllib.error.URLError, ssl.SSLError, socket.timeout) as e:
+                    continue  # 次の手法を試行
+                
+        except yt_dlp.utils.DownloadError as e:
+            error_msg = str(e)
+            if "Video unavailable" in error_msg:
+                return "", "動画が利用できません。非公開または削除されている可能性があります。"
+            elif "Sign in to confirm your age" in error_msg:
+                return "", "年齢制限のある動画です。字幕を取得できません。"
+            else:
+                continue  # 次の手法を試行
+        except Exception as e:
+            continue  # 次の手法を試行
+    
+    # すべての手法が失敗した場合
+    return "", "Cloud環境での字幕取得に失敗しました。「英語字幕を直接入力」オプションをお試しください。"
 
 
 def translate_to_japanese(text: str) -> str:
