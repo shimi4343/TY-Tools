@@ -82,7 +82,7 @@ def get_ydl_opts() -> Dict[str, Any]:
 
 def extract_video_id(url: str) -> str:
     """YouTube URLから動画IDを抽出"""
-    for pattern in (r"(?<=v=)[A-Za-z0-9_-]{11}", r"youtu\.be/([A-Za-z0-9_-]{11})", r"embed/([A-Za-z0-9_-]{11})"):
+    for pattern in (r"(?<=v=)[A-Za-z0-9_-]{11}", r"youtu\.be/([A-Za-z0-9_-]{11})", r"embed/([A-Za-z0-9_-]{11})", r"shorts/([A-Za-z0-9_-]{11})"):
         if (m := re.search(pattern, url)):
             return m.group(1) if m.groups() else m.group(0)
     return ""
@@ -223,9 +223,9 @@ textarea {
 </style>
 """
 
-st.set_page_config(page_title="Script Writer", layout="wide", page_icon="🎬")
+st.set_page_config(page_title="Script Translator", layout="wide", page_icon="🎬")
 st.markdown(CSS, unsafe_allow_html=True)
-st.title("🎬 Script Writer")
+st.title("🎬 Script Translator")
 
 # Session init
 for k, v in {
