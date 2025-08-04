@@ -16,7 +16,6 @@ import os
 import re
 import textwrap
 import json
-from pathlib import Path
 from typing import List, Optional, Dict, Any
 import tempfile
 
@@ -35,8 +34,6 @@ def _rerun() -> None:
 # ---------------------------------------------------------------------------
 # Config & init
 # ---------------------------------------------------------------------------
-PROMPT_PATH = Path(__file__).with_name("prompt.md")
-DEFAULT_TEMPLATE = PROMPT_PATH.read_text(encoding="utf-8") if PROMPT_PATH.exists() else ""
 
 load_dotenv()
 
@@ -203,16 +200,6 @@ def translate_to_japanese(text: str) -> str:
     return "\n\n".join(jp_parts)
 
 
-def generate_script(template: str, eng_text: str) -> str:
-    """ショート動画用スクリプトを生成"""
-    prompt = template.replace("{{ Theme }}", eng_text)
-    resp = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=4096,
-        temperature=0.2,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return resp.content[0].text.strip()
 
 # ---------------------------------------------------------------------------
 # Streamlit UI
@@ -245,24 +232,11 @@ for k, v in {
     "eng_text": "",
     "jp_text": "",
     "jp_ta": "",
-    "script_text": "",
-    "script_ta": "",
-    "prompt_template": DEFAULT_TEMPLATE,
     "video_id": "",
     "input_method": "YouTube URL",
 }.items():
     st.session_state.setdefault(k, v)
 
-# Prompt editor
-with st.expander("📝 Claude プロンプトテンプレート（編集可）", expanded=False):
-    new_template = st.text_area(
-        "Prompt Template",
-        value=st.session_state["prompt_template"],
-        height=300,
-        key="prompt_template_ta",
-    )
-    st.session_state["prompt_template"] = new_template
-    st.caption("`{{ Theme }}` が英語スクリプトに置換されて送信されます。")
 
 # 入力方法の選択
 st.session_state["input_method"] = st.radio(
@@ -278,7 +252,7 @@ if st.session_state["input_method"] == "YouTube URL":
     st.info("💡 字幕の取得に失敗する場合は、「英語字幕を直接入力」オプションをお試しください。")
     
     cols_btn = st.columns(2)
-    fetch_clicked = cols_btn[0].button("🚀 Fetch / 生成")
+    fetch_clicked = cols_btn[0].button("🚀 Fetch & Translate")
     clear_clicked = cols_btn[1].button("✂︎ Clear")
 else:
     eng_text_input = st.text_area(
@@ -290,11 +264,11 @@ else:
     st.caption("YouTubeで動画を開き、字幕ボタン → 文字起こしを表示 → 英語テキストをコピーしてください。")
     
     cols_btn = st.columns(2)
-    fetch_clicked = cols_btn[0].button("🚀 翻訳 / 生成")
+    fetch_clicked = cols_btn[0].button("🚀 Translate")
     clear_clicked = cols_btn[1].button("✂︎ Clear")
 
 if clear_clicked:
-    for key in ("eng_text", "jp_text", "jp_ta", "script_text", "script_ta", "video_id"):
+    for key in ("eng_text", "jp_text", "jp_ta", "video_id"):
         st.session_state[key] = ""
     _rerun()
 
@@ -332,16 +306,11 @@ if fetch_clicked:
     with st.spinner("日本語に翻訳中… (Claude Sonnet 4)"):
         jp = translate_to_japanese(eng)
 
-    with st.spinner("ショート動画台本を生成中…"):
-        script = generate_script(st.session_state["prompt_template"], eng)
-
     st.session_state.update(
         {
             "eng_text": eng,
             "jp_text": jp,
             "jp_ta": jp,
-            "script_text": script,
-            "script_ta": script,
         }
     )
     
@@ -355,21 +324,36 @@ if st.session_state["eng_text"]:
     # テキストの長さに基づいて動的に高さを計算
     text_length = max(
         len(st.session_state["eng_text"]),
-        len(st.session_state["jp_ta"]),
-        len(st.session_state["script_ta"])
+        len(st.session_state["jp_ta"])
     )
     
     # 文字数に応じて高さを調整（100文字あたり約20px）
     dynamic_height = min(max(500, text_length // 100 * 20), 1000)
     
-    col_eng, col_jp, col_sc = st.columns(3)
+    col_eng, col_jp = st.columns(2)
 
     with col_eng:
         st.text_area("English Transcript", value=st.session_state["eng_text"], height=dynamic_height, disabled=True)
     with col_jp:
-        st.session_state["jp_ta"] = st.text_area("Japanese Translation (editable)", value=st.session_state["jp_ta"], height=dynamic_height)
-    with col_sc:
-        st.session_state["script_ta"] = st.text_area("Shorts Script (editable)", value=st.session_state["script_ta"], height=dynamic_height)
+        st.text_area("Japanese Translation (editable)", value=st.session_state["jp_ta"], height=dynamic_height, key="jp_edit")
+        st.session_state["jp_ta"] = st.session_state["jp_edit"]
+        
+        # コピーボタンを追加
+        if st.button("📋 翻訳結果をコピー", key="copy_jp"):
+            st.session_state["copy_text"] = st.session_state["jp_ta"]
+            st.success("翻訳結果をクリップボードにコピーしました！")
+        
+        # JavaScriptでコピー機能を実装
+        if "copy_text" in st.session_state and st.session_state["copy_text"]:
+            st.markdown(
+                f"""
+                <script>
+                navigator.clipboard.writeText(`{st.session_state['copy_text'].replace('`', '\\`')}`);
+                </script>
+                """,
+                unsafe_allow_html=True
+            )
+            del st.session_state["copy_text"]
 
     # Video embed under columns
     if st.session_state["video_id"]:
