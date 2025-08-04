@@ -67,11 +67,16 @@ def get_ydl_opts() -> Dict[str, Any]:
         'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
         'cachedir': temp_dir,
         'socket_timeout': 30,
-        'retries': 3,
-        'fragment_retries': 3,
+        'retries': 5,
+        'fragment_retries': 5,
+        'sleep_interval_requests': 1,
+        'sleep_interval_subtitles': 0.5,
+        'sleep_interval': 1,
+        'max_sleep_interval': 5,
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         },
         'no_color': True,
     }
@@ -209,7 +214,13 @@ def fetch_english_transcript_ytdlp(video_id: str) -> tuple[str, str, str]:
     except json.JSONDecodeError:
         return "", "字幕データの形式が正しくありません。", ""
     except Exception as e:
-        return "", f"予期しないエラーが発生しました: {type(e).__name__}: {str(e)}", ""
+        error_msg = str(e)
+        if "429" in error_msg or "Too Many Requests" in error_msg:
+            return "", "YouTubeからのリクエスト制限に達しました。しばらく待ってからもう一度お試しください。", ""
+        elif "HTTPError" in error_msg:
+            return "", f"YouTube接続エラー: {error_msg}。時間をおいて再試行してください。", ""
+        else:
+            return "", f"予期しないエラーが発生しました: {type(e).__name__}: {str(e)}", ""
 
 
 def translate_to_japanese(text: str, source_lang: str = "en") -> str:
