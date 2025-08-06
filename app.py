@@ -126,15 +126,6 @@ def fetch_english_transcript_ytdlp(video_id: str) -> tuple[str, str, str]:
             subtitles = info.get('subtitles', {})
             automatic_captions = info.get('automatic_captions', {})
             
-            # デバッグ用：利用可能な字幕言語を表示
-            debug_info = []
-            if automatic_captions:
-                debug_info.append(f"自動生成字幕: {list(automatic_captions.keys())}")
-            if subtitles:
-                debug_info.append(f"手動字幕: {list(subtitles.keys())}")
-            
-            if debug_info:
-                st.info(f"利用可能な字幕: {', '.join(debug_info)}")
             
             # 字幕を探す（優先順位を改善）
             subtitle_url = None
