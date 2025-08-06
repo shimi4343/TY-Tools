@@ -76,7 +76,10 @@ def fetch_english_transcript(video_id: str) -> tuple[str, str]:
         except:
             # 手動字幕がない場合は自動生成英語字幕を取得
             try:
-                transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+                # 利用可能な字幕リストを取得
+                transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                # 自動生成英語字幕を探す
+                transcript = transcript_list.find_generated_transcript(['en']).fetch()
             except:
                 # 英語がない場合のエラー
                 return "", "英語字幕が見つかりませんでした。この動画には英語字幕が設定されていない可能性があります。"
