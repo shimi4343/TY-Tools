@@ -286,6 +286,7 @@ if st.session_state["eng_text"]:
 
 # Footer with debug info (開発時のみ表示)
 with st.expander("🔧 Debug Info", expanded=False):
-    st.caption(f"yt-dlp version: {yt_dlp.version.__version__}")
+    import youtube_transcript_api
+    st.caption(f"youtube-transcript-api version: {youtube_transcript_api.__version__}")
     st.caption(f"Python version: {os.sys.version}")
     st.caption(f"Streamlit version: {st.__version__}")
