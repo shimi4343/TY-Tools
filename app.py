@@ -393,13 +393,30 @@ if st.session_state["eng_text"]:
     with col_eng:
         st.text_area("Original Transcript", value=st.session_state["eng_text"], height=dynamic_height, disabled=True)
     with col_jp:
-        st.text_area("Japanese Translation (editable)", value=st.session_state["jp_ta"], height=dynamic_height, key="jp_edit")
-        st.session_state["jp_ta"] = st.session_state["jp_edit"]
+        # テキストエリアの値を適切に管理
+        if "jp_edit" not in st.session_state:
+            st.session_state["jp_edit"] = st.session_state["jp_ta"]
         
-        # コピーボタンを追加
-        if st.button("📋 翻訳結果をコピー", key="copy_jp"):
-            st.session_state["copy_text"] = st.session_state["jp_ta"]
-            st.success("翻訳結果をクリップボードにコピーしました！")
+        edited_jp = st.text_area(
+            "Japanese Translation (editable)", 
+            value=st.session_state["jp_edit"], 
+            height=dynamic_height, 
+            key="jp_text_editor"
+        )
+        
+        # 編集内容をセッション状態に保存
+        st.session_state["jp_edit"] = edited_jp
+        st.session_state["jp_ta"] = edited_jp
+        
+        # 文字数とコピーボタンを横並びで配置
+        col_count, col_copy = st.columns([1, 2])
+        with col_count:
+            jp_char_count = len(edited_jp)
+            st.caption(f"文字数: {jp_char_count:,}")
+        with col_copy:
+            if st.button("📋 翻訳結果をコピー", key="copy_jp"):
+                st.session_state["copy_text"] = edited_jp
+                st.success("翻訳結果をクリップボードにコピーしました！")
         
         # JavaScriptでコピー機能を実装
         if "copy_text" in st.session_state and st.session_state["copy_text"]:
