@@ -413,31 +413,9 @@ if st.session_state["eng_text"]:
         # 現在の値を取得（リアルタイム更新のため）
         current_jp = st.session_state.get("jp_text_editor", st.session_state["jp_edit"])
         
-        # 文字数とコピーボタンを横並びで配置
-        col_count, col_copy = st.columns([1, 2])
-        with col_count:
-            jp_char_count = len(current_jp)
-            st.caption(f"文字数: {jp_char_count:,}")
-        with col_copy:
-            # シンプルなコピー用テキストエリアを表示
-            if st.button("📋 コピー用テキストを表示", key="show_copy_text"):
-                st.session_state["show_copy_area"] = True
-        
-        # コピー用のテキストエリアを表示
-        if st.session_state.get("show_copy_area", False):
-            st.info("👇 下のテキストエリア内を全選択（Ctrl+A / Cmd+A）してコピー（Ctrl+C / Cmd+C）してください")
-            st.text_area(
-                "コピー用テキスト（全選択してコピーしてください）",
-                value=current_jp,
-                height=200,
-                key="copy_text_area",
-                help="Ctrl+A（全選択）→ Ctrl+C（コピー）"
-            )
-            
-            # 閉じるボタン
-            if st.button("❌ コピー用テキストを閉じる", key="hide_copy_text"):
-                st.session_state["show_copy_area"] = False
-                st.rerun()
+        # 文字数を表示
+        jp_char_count = len(current_jp)
+        st.caption(f"文字数: {jp_char_count:,}")
 
     # Video embed under columns
     if st.session_state["video_id"]:
