@@ -15,12 +15,10 @@ from __future__ import annotations
 import os
 import re
 import textwrap
-import json
-from typing import List, Optional, Dict, Any
-import tempfile
+from typing import List, Dict, Any
 
 import streamlit as st
-import yt_dlp
+from youtube_transcript_api import YouTubeTranscriptApi
 import anthropic
 from dotenv import load_dotenv
 
@@ -48,38 +46,6 @@ if not client.api_key:
     st.error("ANTHROPIC_API_KEY is not set. Please add it to your .env or Streamlit secrets.")
     st.stop()
 
-# ---------------------------------------------------------------------------
-# yt-dlp configuration
-# ---------------------------------------------------------------------------
-
-def get_ydl_opts() -> Dict[str, Any]:
-    """yt-dlpのオプションを返す（シンプル版）"""
-    temp_dir = tempfile.gettempdir()
-    
-    return {
-        'quiet': True,
-        'no_warnings': True,
-        'skip_download': True,
-        'writesubtitles': True,
-        'writeautomaticsub': True,
-        'subtitleslangs': ['en', 'en-US', 'en-GB'],
-        'subtitlesformat': 'json3',
-        'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
-        'cachedir': temp_dir,
-        'socket_timeout': 30,
-        'retries': 5,
-        'fragment_retries': 5,
-        'sleep_interval_requests': 1,
-        'sleep_interval_subtitles': 0.5,
-        'sleep_interval': 1,
-        'max_sleep_interval': 5,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        },
-        'no_color': True,
-    }
 
 # ---------------------------------------------------------------------------
 # Utils
@@ -93,146 +59,53 @@ def extract_video_id(url: str) -> str:
     return ""
 
 
-def parse_subtitle_json(subtitle_data: List[Dict[str, Any]]) -> str:
-    """JSON3形式の字幕データをテキストに変換"""
-    text_parts = []
-    for entry in subtitle_data:
-        if 'segs' in entry:
-            # セグメントがある場合（通常の字幕）
-            segment_text = ' '.join(seg.get('utf8', '') for seg in entry['segs'] if seg.get('utf8'))
-            if segment_text.strip():
-                text_parts.append(segment_text.strip())
-        elif 'text' in entry:
-            # 直接テキストがある場合
-            if entry['text'].strip():
-                text_parts.append(entry['text'].strip())
-    
-    return ' '.join(text_parts)
 
 
 
 
 @st.cache_data(show_spinner=False, ttl=3600)  # 1時間キャッシュ
-def fetch_english_transcript_ytdlp(video_id: str) -> tuple[str, str, str]:
+def fetch_english_transcript(video_id: str) -> tuple[str, str]:
     """
-    yt-dlpを使って字幕を取得（英語優先、他言語もフォールバック）
-    Returns: (transcript_text, error_message, language_code)
+    youtube-transcript-apiを使って英語字幕を取得
+    Returns: (transcript_text, error_message)
     """
     try:
-        ydl_opts = get_ydl_opts()
+        # 手動英語字幕を優先的に取得
+        try:
+            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+        except:
+            # 手動字幕がない場合は自動生成英語字幕を取得
+            try:
+                transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+            except:
+                # 英語がない場合のエラー
+                return "", "英語字幕が見つかりませんでした。この動画には英語字幕が設定されていない可能性があります。"
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # 動画情報を取得
-            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-            
-            if not info:
-                return "", "動画情報を取得できませんでした。"
-            
-            # 字幕を確認
-            subtitles = info.get('subtitles', {})
-            automatic_captions = info.get('automatic_captions', {})
-            
-            # 字幕を探す（自動生成字幕優先、英語優先だが他言語もフォールバック）
-            subtitle_url = None
-            found_lang = None
-            
-            # 1. 英語の自動生成字幕を最優先で確認
-            for lang in ['en', 'en-US', 'en-GB']:
-                if lang in automatic_captions:
-                    for sub in automatic_captions[lang]:
-                        if sub.get('ext') == 'json3':
-                            subtitle_url = sub['url']
-                            found_lang = lang
-                            break
-                    if subtitle_url:
-                        break
-            
-            # 2. 英語の手動字幕を確認
-            if not subtitle_url:
-                for lang in ['en', 'en-US', 'en-GB']:
-                    if lang in subtitles:
-                        for sub in subtitles[lang]:
-                            if sub.get('ext') == 'json3':
-                                subtitle_url = sub['url']
-                                found_lang = lang
-                                break
-                        if subtitle_url:
-                            break
-            
-            # 3. 他の言語の自動生成字幕を確認（英語がない場合）
-            if not subtitle_url and automatic_captions:
-                # まず一般的な言語を優先的に確認
-                priority_langs = ['ja', 'es', 'fr', 'de', 'it', 'pt', 'ko', 'zh', 'zh-CN', 'zh-TW']
-                for lang in priority_langs:
-                    if lang in automatic_captions:
-                        for sub in automatic_captions[lang]:
-                            if sub.get('ext') == 'json3':
-                                subtitle_url = sub['url']
-                                found_lang = lang
-                                break
-                        if subtitle_url:
-                            break
-                
-                # それでもない場合は利用可能な最初の自動生成字幕を使用
-                if not subtitle_url:
-                    for lang, subs in automatic_captions.items():
-                        for sub in subs:
-                            if sub.get('ext') == 'json3':
-                                subtitle_url = sub['url']
-                                found_lang = lang
-                                break
-                        if subtitle_url:
-                            break
-            
-            if not subtitle_url:
-                return "", "字幕が見つかりませんでした。この動画には字幕が設定されていない可能性があります。"
-            
-            # 字幕データをダウンロード
-            import urllib.request
-            with urllib.request.urlopen(subtitle_url) as response:
-                subtitle_json = json.loads(response.read().decode('utf-8'))
-            
-            # 字幕をテキストに変換
-            if 'events' in subtitle_json:
-                transcript_text = parse_subtitle_json(subtitle_json['events'])
-            else:
-                transcript_text = parse_subtitle_json(subtitle_json)
-            
-            if not transcript_text:
-                return "", "字幕データの解析に失敗しました。", ""
-            
-            return transcript_text, "", found_lang or "en"
-            
-    except yt_dlp.utils.DownloadError as e:
-        error_msg = str(e)
-        if "Video unavailable" in error_msg:
-            return "", "動画が利用できません。非公開または削除されている可能性があります。", ""
-        elif "Sign in to confirm your age" in error_msg:
-            return "", "年齢制限のある動画です。字幕を取得できません。", ""
-        else:
-            return "", f"ダウンロードエラー: {error_msg}", ""
-    except json.JSONDecodeError:
-        return "", "字幕データの形式が正しくありません。", ""
+        # 字幕テキストを結合
+        transcript_text = ' '.join([entry['text'] for entry in transcript])
+        
+        if not transcript_text:
+            return "", "字幕データが空でした。"
+        
+        return transcript_text, ""
+        
     except Exception as e:
-        error_msg = str(e)
-        if "429" in error_msg or "Too Many Requests" in error_msg:
-            return "", "YouTubeからのリクエスト制限に達しました。しばらく待ってからもう一度お試しください。", ""
-        elif "HTTPError" in error_msg:
-            return "", f"YouTube接続エラー: {error_msg}。時間をおいて再試行してください。", ""
+        from youtube_transcript_api._errors import TranscriptsDisabled, VideoUnavailable, NoTranscriptFound
+        
+        if isinstance(e, TranscriptsDisabled):
+            return "", "この動画では字幕が無効化されています。"
+        elif isinstance(e, VideoUnavailable):
+            return "", "動画が利用できません。非公開または削除されている可能性があります。"
+        elif isinstance(e, NoTranscriptFound):
+            return "", "英語字幕が見つかりませんでした。この動画には英語字幕が設定されていない可能性があります。"
         else:
-            return "", f"予期しないエラーが発生しました: {type(e).__name__}: {str(e)}", ""
+            return "", f"予期しないエラーが発生しました: {type(e).__name__}: {str(e)}"
 
 
-def translate_to_japanese(text: str, source_lang: str = "en") -> str:
-    """テキストを日本語に翻訳"""
+def translate_to_japanese(text: str) -> str:
+    """英語テキストを日本語に翻訳"""
     if not text:
         return ""
-    
-    # 言語に応じてプロンプトを調整
-    if source_lang.startswith('en'):
-        prompt_prefix = "以下の英文を自然な日本語（敬体、です・ます調）に翻訳してください。原文の改行を維持してください。\n\n"
-    else:
-        prompt_prefix = f"以下のテキスト（言語コード: {source_lang}）を自然な日本語（敬体、です・ます調）に翻訳してください。原文の改行を維持してください。\n\n"
     
     jp_parts: list[str] = []
     for chunk in textwrap.wrap(text, 6000):
@@ -240,7 +113,7 @@ def translate_to_japanese(text: str, source_lang: str = "en") -> str:
             model="claude-sonnet-4-20250514",
             max_tokens=4096,
             temperature=0.1,
-            messages=[{"role": "user", "content": prompt_prefix + chunk}],
+            messages=[{"role": "user", "content": "以下の英文を自然な日本語（敬体、です・ます調）に翻訳してください。原文の改行を維持してください。\n\n" + chunk}],
         )
         jp_parts.append(resp.content[0].text.strip())
     return "\n\n".join(jp_parts)
@@ -326,8 +199,8 @@ if fetch_clicked:
             st.error("動画 ID を URL から抽出できませんでした。URL を確認してください。")
             st.stop()
 
-        with st.spinner("字幕を取得中…"):
-            eng, error_msg, source_lang = fetch_english_transcript_ytdlp(vid)
+        with st.spinner("英語字幕を取得中…"):
+            eng, error_msg = fetch_english_transcript(vid)
         
         if error_msg:
             st.error(f"❌ {error_msg}")
@@ -335,18 +208,13 @@ if fetch_clicked:
             st.stop()
         
         if not eng:
-            st.error("字幕が見つかりませんでした。")
+            st.error("英語字幕が見つかりませんでした。")
             st.stop()
         
         st.session_state["video_id"] = vid
-        
-        # 取得した字幕の言語を表示
-        if source_lang != "en":
-            st.info(f"💡 英語字幕が見つからなかったため、{source_lang}言語の字幕を取得しました。")
     
     elif st.session_state["input_method"] == "英語字幕を直接入力" and eng_text_input:
         eng = eng_text_input.strip()
-        source_lang = "en"  # 直接入力の場合は英語として扱う
         if not eng:
             st.error("英語字幕を入力してください。")
             st.stop()
@@ -355,7 +223,7 @@ if fetch_clicked:
         st.stop()
 
     with st.spinner("日本語に翻訳中… (Claude Sonnet 4)"):
-        jp = translate_to_japanese(eng, source_lang)
+        jp = translate_to_japanese(eng)
 
     st.session_state.update(
         {
@@ -384,7 +252,7 @@ if st.session_state["eng_text"]:
     col_eng, col_jp = st.columns(2)
 
     with col_eng:
-        st.text_area("Original Transcript", value=st.session_state["eng_text"], height=dynamic_height, disabled=True)
+        st.text_area("English Transcript", value=st.session_state["eng_text"], height=dynamic_height, disabled=True)
     with col_jp:
         st.text_area("Japanese Translation (editable)", value=st.session_state["jp_ta"], height=dynamic_height, key="jp_edit")
         st.session_state["jp_ta"] = st.session_state["jp_edit"]
