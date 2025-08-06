@@ -286,7 +286,11 @@ if st.session_state["eng_text"]:
 
 # Footer with debug info (開発時のみ表示)
 with st.expander("🔧 Debug Info", expanded=False):
-    import youtube_transcript_api
-    st.caption(f"youtube-transcript-api version: {youtube_transcript_api.__version__}")
+    try:
+        import youtube_transcript_api
+        version = getattr(youtube_transcript_api, '__version__', 'unknown')
+        st.caption(f"youtube-transcript-api version: {version}")
+    except:
+        st.caption("youtube-transcript-api: installed")
     st.caption(f"Python version: {os.sys.version}")
     st.caption(f"Streamlit version: {st.__version__}")
