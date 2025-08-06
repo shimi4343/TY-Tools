@@ -15,10 +15,12 @@ from __future__ import annotations
 import os
 import re
 import textwrap
-from typing import List, Dict, Any
+import json
+from typing import List, Optional, Dict, Any
+import tempfile
 
 import streamlit as st
-from youtube_transcript_api import YouTubeTranscriptApi
+import yt_dlp
 import anthropic
 from dotenv import load_dotenv
 
@@ -28,6 +30,43 @@ from dotenv import load_dotenv
 
 def _rerun() -> None:
     (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()  # type: ignore[arg-type]
+
+# ---------------------------------------------------------------------------
+# yt-dlp configuration
+# ---------------------------------------------------------------------------
+
+def get_ydl_opts() -> Dict[str, Any]:
+    """yt-dlpのオプションを返す（改善版）"""
+    temp_dir = tempfile.gettempdir()
+    
+    return {
+        'quiet': True,
+        'no_warnings': True,
+        'skip_download': True,
+        'writesubtitles': True,
+        'writeautomaticsub': True,
+        'subtitleslangs': ['en', 'en-US', 'en-GB'],
+        'subtitlesformat': 'json3',
+        'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
+        'cachedir': temp_dir,
+        'socket_timeout': 60,
+        'retries': 10,
+        'fragment_retries': 10,
+        'sleep_interval_requests': 2,
+        'sleep_interval_subtitles': 1,
+        'sleep_interval': 2,
+        'max_sleep_interval': 10,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Encoding': 'gzip, deflate',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+        },
+        'no_color': True,
+        'extract_flat': False,
+    }
 
 # ---------------------------------------------------------------------------
 # Config & init
@@ -51,6 +90,22 @@ if not client.api_key:
 # Utils
 # ---------------------------------------------------------------------------
 
+def parse_subtitle_json(subtitle_data: List[Dict[str, Any]]) -> str:
+    """JSON3形式の字幕データをテキストに変換"""
+    text_parts = []
+    for entry in subtitle_data:
+        if 'segs' in entry:
+            # セグメントがある場合（通常の字幕）
+            segment_text = ' '.join(seg.get('utf8', '') for seg in entry['segs'] if seg.get('utf8'))
+            if segment_text.strip():
+                text_parts.append(segment_text.strip())
+        elif 'text' in entry:
+            # 直接テキストがある場合
+            if entry['text'].strip():
+                text_parts.append(entry['text'].strip())
+    
+    return ' '.join(text_parts)
+
 def extract_video_id(url: str) -> str:
     """YouTube URLから動画IDを抽出"""
     for pattern in (r"(?<=v=)[A-Za-z0-9_-]{11}", r"youtu\.be/([A-Za-z0-9_-]{11})", r"embed/([A-Za-z0-9_-]{11})", r"shorts/([A-Za-z0-9_-]{11})"):
@@ -66,48 +121,82 @@ def extract_video_id(url: str) -> str:
 @st.cache_data(show_spinner=False, ttl=3600)  # 1時間キャッシュ
 def fetch_english_transcript(video_id: str) -> tuple[str, str]:
     """
-    youtube-transcript-apiを使って英語字幕を取得
+    yt-dlpを使って英語字幕を取得（改善版）
     Returns: (transcript_text, error_message)
     """
     try:
-        # 利用可能な字幕リストを取得
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        ydl_opts = get_ydl_opts()
         
-        # 1. 手動英語字幕を優先的に取得
-        try:
-            transcript_obj = transcript_list.find_transcript(['en', 'en-US', 'en-GB'])
-            transcript = transcript_obj.fetch()
-        except:
-            # 2. 自動生成英語字幕を取得
-            try:
-                transcript_obj = transcript_list.find_generated_transcript(['en', 'en-US', 'en-GB'])
-                transcript = transcript_obj.fetch()
-            except:
-                # 3. 利用可能な字幕の詳細をデバッグ表示
-                available_transcripts = []
-                for t in transcript_list:
-                    available_transcripts.append(f"{t.language_code} ({'generated' if t.is_generated else 'manual'})")
-                
-                debug_info = ", ".join(available_transcripts) if available_transcripts else "なし"
-                return "", f"英語字幕が見つかりませんでした。利用可能な字幕: {debug_info}"
-        
-        # 字幕テキストを結合
-        transcript_text = ' '.join([entry['text'] for entry in transcript])
-        
-        if not transcript_text:
-            return "", "字幕データが空でした。"
-        
-        return transcript_text, ""
-        
-    except Exception as e:
-        from youtube_transcript_api._errors import TranscriptsDisabled, VideoUnavailable, NoTranscriptFound
-        
-        if isinstance(e, TranscriptsDisabled):
-            return "", "この動画では字幕が無効化されています。"
-        elif isinstance(e, VideoUnavailable):
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # 動画情報を取得
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+            
+            if not info:
+                return "", "動画情報を取得できませんでした。"
+            
+            # 字幕を確認
+            subtitles = info.get('subtitles', {})
+            automatic_captions = info.get('automatic_captions', {})
+            
+            # 英語字幕を探す（自動生成字幕を優先）
+            subtitle_url = None
+            
+            # 1. 自動生成英語字幕を最優先で確認
+            for lang in ['en', 'en-US', 'en-GB']:
+                if lang in automatic_captions:
+                    for sub in automatic_captions[lang]:
+                        if sub.get('ext') == 'json3':
+                            subtitle_url = sub['url']
+                            break
+                    if subtitle_url:
+                        break
+            
+            # 2. 手動英語字幕を確認
+            if not subtitle_url:
+                for lang in ['en', 'en-US', 'en-GB']:
+                    if lang in subtitles:
+                        for sub in subtitles[lang]:
+                            if sub.get('ext') == 'json3':
+                                subtitle_url = sub['url']
+                                break
+                        if subtitle_url:
+                            break
+            
+            if not subtitle_url:
+                return "", "英語字幕が見つかりませんでした。この動画には英語字幕が設定されていない可能性があります。"
+            
+            # 字幕データをダウンロード
+            import urllib.request
+            with urllib.request.urlopen(subtitle_url) as response:
+                subtitle_json = json.loads(response.read().decode('utf-8'))
+            
+            # 字幕をテキストに変換
+            if 'events' in subtitle_json:
+                transcript_text = parse_subtitle_json(subtitle_json['events'])
+            else:
+                transcript_text = parse_subtitle_json(subtitle_json)
+            
+            if not transcript_text:
+                return "", "字幕データの解析に失敗しました。"
+            
+            return transcript_text, ""
+            
+    except yt_dlp.utils.DownloadError as e:
+        error_msg = str(e)
+        if "Video unavailable" in error_msg:
             return "", "動画が利用できません。非公開または削除されている可能性があります。"
-        elif isinstance(e, NoTranscriptFound):
-            return "", "字幕が見つかりませんでした。この動画には字幕が設定されていない可能性があります。"
+        elif "Sign in to confirm your age" in error_msg:
+            return "", "年齢制限のある動画です。字幕を取得できません。"
+        else:
+            return "", f"ダウンロードエラー: {error_msg}"
+    except json.JSONDecodeError:
+        return "", "字幕データの形式が正しくありません。"
+    except Exception as e:
+        error_msg = str(e)
+        if "429" in error_msg or "Too Many Requests" in error_msg:
+            return "", "YouTubeからのリクエスト制限に達しました。しばらく待ってからもう一度お試しください。"
+        elif "HTTPError" in error_msg:
+            return "", f"YouTube接続エラー: {error_msg}。時間をおいて再試行してください。"
         else:
             return "", f"予期しないエラーが発生しました: {type(e).__name__}: {str(e)}"
 
@@ -296,11 +385,6 @@ if st.session_state["eng_text"]:
 
 # Footer with debug info (開発時のみ表示)
 with st.expander("🔧 Debug Info", expanded=False):
-    try:
-        import youtube_transcript_api
-        version = getattr(youtube_transcript_api, '__version__', 'unknown')
-        st.caption(f"youtube-transcript-api version: {version}")
-    except:
-        st.caption("youtube-transcript-api: installed")
+    st.caption(f"yt-dlp version: {yt_dlp.version.__version__}")
     st.caption(f"Python version: {os.sys.version}")
     st.caption(f"Streamlit version: {st.__version__}")
