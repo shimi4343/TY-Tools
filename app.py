@@ -419,54 +419,25 @@ if st.session_state["eng_text"]:
             jp_char_count = len(current_jp)
             st.caption(f"文字数: {jp_char_count:,}")
         with col_copy:
-            if st.button("📋 翻訳結果をコピー", key="copy_jp"):
-                # テキストを安全にエスケープ処理
-                safe_text = current_jp.replace('\\', '\\\\').replace('`', '\\`').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t').replace('"', '\\"').replace("'", "\\'")
-                
-                # より確実なJavaScriptコピー機能
-                copy_script = f"""
-                <script>
-                    (function() {{
-                        const text = `{safe_text}`;
-                        
-                        // 複数の方法でコピーを試行
-                        if (navigator.clipboard && navigator.clipboard.writeText) {{
-                            // Clipboard API (モダンブラウザ)
-                            navigator.clipboard.writeText(text).then(function() {{
-                                console.log('コピー成功 (Clipboard API)');
-                            }}).catch(function(err) {{
-                                console.error('Clipboard API失敗:', err);
-                                fallbackCopy(text);
-                            }});
-                        }} else {{
-                            fallbackCopy(text);
-                        }}
-                        
-                        function fallbackCopy(text) {{
-                            // フォールバック方法
-                            const textarea = document.createElement('textarea');
-                            textarea.value = text;
-                            textarea.style.position = 'fixed';
-                            textarea.style.opacity = '0';
-                            document.body.appendChild(textarea);
-                            textarea.select();
-                            textarea.setSelectionRange(0, 99999);
-                            
-                            try {{
-                                document.execCommand('copy');
-                                console.log('コピー成功 (execCommand)');
-                            }} catch (err) {{
-                                console.error('コピー失敗:', err);
-                            }}
-                            
-                            document.body.removeChild(textarea);
-                        }}
-                    }})();
-                </script>
-                """
-                
-                st.markdown(copy_script, unsafe_allow_html=True)
-                st.success("翻訳結果をクリップボードにコピーしました！")
+            # シンプルなコピー用テキストエリアを表示
+            if st.button("📋 コピー用テキストを表示", key="show_copy_text"):
+                st.session_state["show_copy_area"] = True
+        
+        # コピー用のテキストエリアを表示
+        if st.session_state.get("show_copy_area", False):
+            st.info("👇 下のテキストエリア内を全選択（Ctrl+A / Cmd+A）してコピー（Ctrl+C / Cmd+C）してください")
+            st.text_area(
+                "コピー用テキスト（全選択してコピーしてください）",
+                value=current_jp,
+                height=200,
+                key="copy_text_area",
+                help="Ctrl+A（全選択）→ Ctrl+C（コピー）"
+            )
+            
+            # 閉じるボタン
+            if st.button("❌ コピー用テキストを閉じる", key="hide_copy_text"):
+                st.session_state["show_copy_area"] = False
+                st.rerun()
 
     # Video embed under columns
     if st.session_state["video_id"]:
