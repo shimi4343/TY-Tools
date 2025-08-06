@@ -70,19 +70,26 @@ def fetch_english_transcript(video_id: str) -> tuple[str, str]:
     Returns: (transcript_text, error_message)
     """
     try:
-        # 手動英語字幕を優先的に取得
+        # 利用可能な字幕リストを取得
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        
+        # 1. 手動英語字幕を優先的に取得
         try:
-            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+            transcript_obj = transcript_list.find_transcript(['en', 'en-US', 'en-GB'])
+            transcript = transcript_obj.fetch()
         except:
-            # 手動字幕がない場合は自動生成英語字幕を取得
+            # 2. 自動生成英語字幕を取得
             try:
-                # 利用可能な字幕リストを取得
-                transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-                # 自動生成英語字幕を探す
-                transcript = transcript_list.find_generated_transcript(['en']).fetch()
+                transcript_obj = transcript_list.find_generated_transcript(['en', 'en-US', 'en-GB'])
+                transcript = transcript_obj.fetch()
             except:
-                # 英語がない場合のエラー
-                return "", "英語字幕が見つかりませんでした。この動画には英語字幕が設定されていない可能性があります。"
+                # 3. 利用可能な字幕の詳細をデバッグ表示
+                available_transcripts = []
+                for t in transcript_list:
+                    available_transcripts.append(f"{t.language_code} ({'generated' if t.is_generated else 'manual'})")
+                
+                debug_info = ", ".join(available_transcripts) if available_transcripts else "なし"
+                return "", f"英語字幕が見つかりませんでした。利用可能な字幕: {debug_info}"
         
         # 字幕テキストを結合
         transcript_text = ' '.join([entry['text'] for entry in transcript])
@@ -100,7 +107,7 @@ def fetch_english_transcript(video_id: str) -> tuple[str, str]:
         elif isinstance(e, VideoUnavailable):
             return "", "動画が利用できません。非公開または削除されている可能性があります。"
         elif isinstance(e, NoTranscriptFound):
-            return "", "英語字幕が見つかりませんでした。この動画には英語字幕が設定されていない可能性があります。"
+            return "", "字幕が見つかりませんでした。この動画には字幕が設定されていない可能性があります。"
         else:
             return "", f"予期しないエラーが発生しました: {type(e).__name__}: {str(e)}"
 
