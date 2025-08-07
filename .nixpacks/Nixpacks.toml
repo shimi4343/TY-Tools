@@ -1,5 +1,6 @@
 [phases.setup]
 nixPkgs = ["python311", "ffmpeg", "gcc"]
+paths   = ["...", "/nix/var/nix/profiles/default/bin"]  # ここを追加
 
 [phases.install]
 cmds = ["pip install -r requirements.txt"]
