@@ -389,7 +389,7 @@ with tab1:
         ["YouTube URL", "英語字幕を直接入力"],
         index=0 if st.session_state["input_method"] == "YouTube URL" else 1,
         horizontal=True
-    )"
+    )
 
     # Input controls
     if st.session_state["input_method"] == "YouTube URL":
