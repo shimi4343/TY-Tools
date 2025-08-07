@@ -15,6 +15,11 @@ import os
 import re
 import textwrap
 import json
+import subprocess
+import sys
+import glob
+import shutil
+import platform
 from typing import List, Optional, Dict, Any
 import tempfile
 
@@ -253,6 +258,87 @@ def translate_to_japanese(text: str, source_lang: str = "en") -> str:
 
 
 # ---------------------------------------------------------------------------
+# Video Downloader Functions
+# ---------------------------------------------------------------------------
+
+def validate_time_format(time_str):
+    """時間フォーマットを検証（00:00, 00:12, 01:22:33, 0000, 000010形式）"""
+    # MM:SS または HH:MM:SS 形式
+    colon_pattern = r'^\d{1,2}:\d{2}(:\d{2})?$'
+    # MMSS または HHMMSS 形式（4桁または6桁）
+    digit_pattern = r'^\d{4}$|^\d{6}$'
+    
+    return re.match(colon_pattern, time_str) is not None or re.match(digit_pattern, time_str) is not None
+
+def normalize_time_format(time_str):
+    """時間フォーマットを正規化（4桁・6桁をMM:SS・HH:MM:SS形式に変換）"""
+    if re.match(r'^\d{4}$', time_str):
+        # 4桁の場合：MMSS -> MM:SS
+        return f"{time_str[:2]}:{time_str[2:]}"
+    elif re.match(r'^\d{6}$', time_str):
+        # 6桁の場合：HHMMSS -> HH:MM:SS
+        return f"{time_str[:2]}:{time_str[2:4]}:{time_str[4:]}"
+    else:
+        # すでに正しい形式の場合はそのまま返す
+        return time_str
+
+def validate_youtube_url_downloader(url):
+    """YouTubeのURLを検証"""
+    youtube_patterns = [
+        r'https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+',
+        r'https?://youtu\.be/[\w-]+',
+        r'https?://(?:www\.)?youtube\.com/embed/[\w-]+',
+        r'https?://(?:www\.)?youtube\.com/shorts/[\w-]+'
+    ]
+    return any(re.match(pattern, url) for pattern in youtube_patterns)
+
+def get_unique_filename(base_path):
+    """既存ファイルと重複しない一意のファイル名を生成"""
+    if not os.path.exists(base_path):
+        return base_path
+    
+    # ファイル名と拡張子を分離
+    name, ext = os.path.splitext(base_path)
+    counter = 2
+    
+    while os.path.exists(f"{name}_V{counter}{ext}"):
+        counter += 1
+    
+    return f"{name}_V{counter}{ext}"
+
+def format_command_display(cmd, download_sections, youtube_url):
+    """表示用にコマンドの引数を引用符で囲む"""
+    cmd_display = []
+    for arg in cmd:
+        if arg == "codec:avc:aac,res:1080,fps:60,hdr:sdr":
+            cmd_display.append(f'"{arg}"')
+        elif arg == "bv+ba":
+            cmd_display.append(f'"{arg}"')
+        elif "%(title)s_%(height)s_%(fps)s_%(vcodec.:4)s_(%(id)s)" in arg:
+            cmd_display.append(f'"{arg}"')
+        elif arg == download_sections:
+            cmd_display.append(f'"{arg}"')
+        elif arg == youtube_url:
+            cmd_display.append(f'"{arg}"')
+        else:
+            cmd_display.append(arg)
+    return " ".join(cmd_display)
+
+def cleanup_server_file():
+    """サーバー上のファイルとセッション状態をクリーンアップ"""
+    if st.session_state.downloaded_file_path and os.path.exists(st.session_state.downloaded_file_path):
+        try:
+            os.remove(st.session_state.downloaded_file_path)
+        except Exception:
+            pass  # エラーは無視
+    
+    # セッション状態をクリア
+    st.session_state.downloaded_file_path = None
+    st.session_state.downloaded_file_data = None
+    st.session_state.downloaded_file_name = None
+
+
+# ---------------------------------------------------------------------------
 # Streamlit UI
 # ---------------------------------------------------------------------------
 CSS = """
@@ -273,9 +359,12 @@ textarea {
 </style>
 """
 
-st.set_page_config(page_title="Script Translator", layout="wide", page_icon="🎬")
+st.set_page_config(page_title="YouTube Tools", layout="wide", page_icon="🎬")
 st.markdown(CSS, unsafe_allow_html=True)
-st.title("🎬 Script Translator")
+st.title("🎬 YouTube Tools")
+
+# タブの作成
+tab1, tab2 = st.tabs(["🔤 Script Translator", "📹 Video Downloader"])
 
 # Session init
 for k, v in {
@@ -284,140 +373,342 @@ for k, v in {
     "jp_ta": "",
     "video_id": "",
     "input_method": "YouTube URL",
+    "downloaded_file_path": None,
+    "downloaded_file_data": None,
+    "downloaded_file_name": None,
+    "download_clicked": False,
 }.items():
     st.session_state.setdefault(k, v)
 
 
-# 入力方法の選択
-st.session_state["input_method"] = st.radio(
-    "入力方法を選択",
-    ["YouTube URL", "英語字幕を直接入力"],
-    index=0 if st.session_state["input_method"] == "YouTube URL" else 1,
-    horizontal=True
-)
+# Tab 1: Script Translator
+with tab1:
+    # 入力方法の選択
+    st.session_state["input_method"] = st.radio(
+        "入力方法を選択",
+        ["YouTube URL", "英語字幕を直接入力"],
+        index=0 if st.session_state["input_method"] == "YouTube URL" else 1,
+        horizontal=True
+    )"
 
-# Input controls
-if st.session_state["input_method"] == "YouTube URL":
-    url = st.text_input("YouTube URLを入力してください：", key="url_input")
-    st.info("💡 字幕の取得に失敗する場合は、「英語字幕を直接入力」オプションをお試しください。")
-    
-    cols_btn = st.columns(2)
-    fetch_clicked = cols_btn[0].button("🚀 Fetch & Translate")
-    clear_clicked = cols_btn[1].button("✂︎ Clear")
-else:
-    eng_text_input = st.text_area(
-        "英語字幕を貼り付けてください：",
-        height=200,
-        placeholder="YouTubeの字幕をここに貼り付けてください...",
-        key="manual_eng_input"
-    )
-    st.caption("YouTubeで動画を開き、字幕ボタン → 文字起こしを表示 → 英語テキストをコピーしてください。")
-    
-    cols_btn = st.columns(2)
-    fetch_clicked = cols_btn[0].button("🚀 Translate")
-    clear_clicked = cols_btn[1].button("✂︎ Clear")
-
-if clear_clicked:
-    for key in ("eng_text", "jp_text", "jp_ta", "video_id"):
-        st.session_state[key] = ""
-    _rerun()
-
-# Processing
-if fetch_clicked:
-    if st.session_state["input_method"] == "YouTube URL" and url:
-        vid = extract_video_id(url)
-        if not vid:
-            st.error("動画 ID を URL から抽出できませんでした。URL を確認してください。")
-            st.stop()
-
-        with st.spinner("字幕を取得中…"):
-            eng, error_msg, source_lang = fetch_english_transcript_ytdlp(vid)
+    # Input controls
+    if st.session_state["input_method"] == "YouTube URL":
+        url = st.text_input("YouTube URLを入力してください：", key="url_input")
+        st.info("💡 字幕の取得に失敗する場合は、「英語字幕を直接入力」オプションをお試しください。")
         
-        if error_msg:
-            st.error(f"❌ {error_msg}")
-            st.info("💡 「英語字幕を直接入力」オプションを使用してください。")
-            st.stop()
-        
-        if not eng:
-            st.error("字幕が見つかりませんでした。")
-            st.stop()
-        
-        st.session_state["video_id"] = vid
-        
-        # 取得した字幕の言語を表示
-        if source_lang and not source_lang.startswith("en"):
-            st.info(f"💡 英語字幕が見つからなかったため、{source_lang}言語の字幕を取得しました。")
-    
-    elif st.session_state["input_method"] == "英語字幕を直接入力" and eng_text_input:
-        eng = eng_text_input.strip()
-        source_lang = "en"  # 直接入力の場合は英語として扱う
-        if not eng:
-            st.error("英語字幕を入力してください。")
-            st.stop()
+        cols_btn = st.columns(2)
+        fetch_clicked = cols_btn[0].button("🚀 Fetch & Translate")
+        clear_clicked = cols_btn[1].button("✂︎ Clear")
     else:
-        st.error("URLまたは英語字幕を入力してください。")
-        st.stop()
-
-    with st.spinner("日本語に翻訳中… (Claude Sonnet 4)"):
-        jp = translate_to_japanese(eng, source_lang)
-
-    st.session_state.update(
-        {
-            "eng_text": eng,
-            "jp_text": jp,
-            "jp_ta": jp,
-        }
-    )
-    
-    if st.session_state["input_method"] == "英語字幕を直接入力":
-        st.session_state["video_id"] = ""
-    
-    _rerun()
-
-# Display outputs
-if st.session_state["eng_text"]:
-    # テキストの長さに基づいて動的に高さを計算
-    text_length = max(
-        len(st.session_state["eng_text"]),
-        len(st.session_state["jp_ta"])
-    )
-    
-    # 文字数に応じて高さを調整（100文字あたり約20px）
-    dynamic_height = min(max(500, text_length // 100 * 20), 1000)
-    
-    col_eng, col_jp = st.columns(2)
-
-    with col_eng:
-        st.text_area("Original Transcript", value=st.session_state["eng_text"], height=dynamic_height, disabled=True)
-    with col_jp:
-        # テキストエリアの値を適切に管理
-        if "jp_edit" not in st.session_state:
-            st.session_state["jp_edit"] = st.session_state["jp_ta"]
+        eng_text_input = st.text_area(
+            "英語字幕を貼り付けてください：",
+            height=200,
+            placeholder="YouTubeの字幕をここに貼り付けてください...",
+            key="manual_eng_input"
+        )
+        st.caption("YouTubeで動画を開き、字幕ボタン → 文字起こしを表示 → 英語テキストをコピーしてください。")
         
-        def update_jp_text():
-            """テキストエリアの変更時に呼び出される"""
-            st.session_state["jp_edit"] = st.session_state["jp_text_editor"]
-            st.session_state["jp_ta"] = st.session_state["jp_text_editor"]
+        cols_btn = st.columns(2)
+        fetch_clicked = cols_btn[0].button("🚀 Translate")
+        clear_clicked = cols_btn[1].button("✂︎ Clear")
+
+    if clear_clicked:
+        for key in ("eng_text", "jp_text", "jp_ta", "video_id"):
+            st.session_state[key] = ""
+        _rerun()
+
+    # Processing
+    if fetch_clicked:
+        if st.session_state["input_method"] == "YouTube URL" and url:
+            vid = extract_video_id(url)
+            if not vid:
+                st.error("動画 ID を URL から抽出できませんでした。URL を確認してください。")
+                st.stop()
+
+            with st.spinner("字幕を取得中…"):
+                eng, error_msg, source_lang = fetch_english_transcript_ytdlp(vid)
+            
+            if error_msg:
+                st.error(f"❌ {error_msg}")
+                st.info("💡 「英語字幕を直接入力」オプションを使用してください。")
+                st.stop()
+            
+            if not eng:
+                st.error("字幕が見つかりませんでした。")
+                st.stop()
+            
+            st.session_state["video_id"] = vid
+            
+            # 取得した字幕の言語を表示
+            if source_lang and not source_lang.startswith("en"):
+                st.info(f"💡 英語字幕が見つからなかったため、{source_lang}言語の字幕を取得しました。")
         
-        edited_jp = st.text_area(
-            "Japanese Translation (editable)", 
-            value=st.session_state["jp_edit"], 
-            height=dynamic_height, 
-            key="jp_text_editor",
-            on_change=update_jp_text
+        elif st.session_state["input_method"] == "英語字幕を直接入力" and eng_text_input:
+            eng = eng_text_input.strip()
+            source_lang = "en"  # 直接入力の場合は英語として扱う
+            if not eng:
+                st.error("英語字幕を入力してください。")
+                st.stop()
+        else:
+            st.error("URLまたは英語字幕を入力してください。")
+            st.stop()
+
+        with st.spinner("日本語に翻訳中… (Claude Sonnet 4)"):
+            jp = translate_to_japanese(eng, source_lang)
+
+        st.session_state.update(
+            {
+                "eng_text": eng,
+                "jp_text": jp,
+                "jp_ta": jp,
+            }
         )
         
-        # 現在の値を取得（リアルタイム更新のため）
-        current_jp = st.session_state.get("jp_text_editor", st.session_state["jp_edit"])
+        if st.session_state["input_method"] == "英語字幕を直接入力":
+            st.session_state["video_id"] = ""
         
-        # 文字数を表示
-        jp_char_count = len(current_jp)
-        st.caption(f"文字数: {jp_char_count:,}")
+        _rerun()
 
-    # Video embed under columns
-    if st.session_state["video_id"]:
+    # Display outputs
+    if st.session_state["eng_text"]:
+        # テキストの長さに基づいて動的に高さを計算
+        text_length = max(
+            len(st.session_state["eng_text"]),
+            len(st.session_state["jp_ta"])
+        )
+        
+        # 文字数に応じて高さを調整（100文字あたり約20px）
+        dynamic_height = min(max(500, text_length // 100 * 20), 1000)
+        
+        col_eng, col_jp = st.columns(2)
+
+        with col_eng:
+            st.text_area("Original Transcript", value=st.session_state["eng_text"], height=dynamic_height, disabled=True)
+        with col_jp:
+            # テキストエリアの値を適切に管理
+            if "jp_edit" not in st.session_state:
+                st.session_state["jp_edit"] = st.session_state["jp_ta"]
+            
+            def update_jp_text():
+                """テキストエリアの変更時に呼び出される"""
+                st.session_state["jp_edit"] = st.session_state["jp_text_editor"]
+                st.session_state["jp_ta"] = st.session_state["jp_text_editor"]
+            
+            edited_jp = st.text_area(
+                "Japanese Translation (editable)", 
+                value=st.session_state["jp_edit"], 
+                height=dynamic_height, 
+                key="jp_text_editor",
+                on_change=update_jp_text
+            )
+            
+            # 現在の値を取得（リアルタイム更新のため）
+            current_jp = st.session_state.get("jp_text_editor", st.session_state["jp_edit"])
+            
+            # 文字数を表示
+            jp_char_count = len(current_jp)
+            st.caption(f"文字数: {jp_char_count:,}")
+
+        # Video embed under columns
+        if st.session_state["video_id"]:
+            st.markdown("---")
+            st.video(f"https://www.youtube.com/watch?v={st.session_state['video_id']}")
+
+
+# Tab 2: Video Downloader
+with tab2:
+    st.markdown("---")
+    
+    # YouTubeのURL入力
+    st.subheader("YouTubeのURL")
+    youtube_url_dl = st.text_input("YouTubeのURLを入力してください", placeholder="https://www.youtube.com/watch?v=...", key="youtube_url_dl")
+    
+    # URL検証
+    url_valid_dl = True
+    if youtube_url_dl:
+        if not validate_youtube_url_downloader(youtube_url_dl):
+            st.error("無効なYouTubeのURLです。正しいURLを入力してください。")
+            url_valid_dl = False
+        else:
+            st.success("有効なYouTubeのURLです。")
+    
+    # 時間入力
+    st.subheader("ダウンロード区間")
+    col1_dl, col2_dl = st.columns(2)
+    
+    with col1_dl:
+        start_time_dl = st.text_input("開始時間", placeholder="例: 00:00, 01:30, 01:22:33, 0130, 012233（空欄で動画全体）", key="start_time_dl")
+        start_time_valid_dl = True
+        if start_time_dl:
+            if not validate_time_format(start_time_dl):
+                st.error("無効な時間フォーマットです。00:00、01:22:33、0130、012233の形式で入力してください。")
+                start_time_valid_dl = False
+            else:
+                normalized_start_dl = normalize_time_format(start_time_dl)
+                st.success(f"有効な時間フォーマットです。({normalized_start_dl})")
+    
+    with col2_dl:
+        end_time_dl = st.text_input("終了時間", placeholder="例: 00:10, 02:30, 01:25:45, 0230, 012545（空欄で動画全体）", key="end_time_dl")
+        end_time_valid_dl = True
+        if end_time_dl:
+            if not validate_time_format(end_time_dl):
+                st.error("無効な時間フォーマットです。00:00、01:22:33、0130、012233の形式で入力してください。")
+                end_time_valid_dl = False
+            else:
+                normalized_end_dl = normalize_time_format(end_time_dl)
+                st.success(f"有効な時間フォーマットです。({normalized_end_dl})")
+    
+    # 時間指定の状態を表示
+    if not start_time_dl.strip() and not end_time_dl.strip():
+        st.info("💡 時間指定なし：動画全体をダウンロードします")
+    elif start_time_dl.strip() and end_time_dl.strip():
+        if start_time_valid_dl and end_time_valid_dl:
+            st.info(f"💡 指定区間：{normalize_time_format(start_time_dl) if start_time_dl else ''} ～ {normalize_time_format(end_time_dl) if end_time_dl else ''}")
+    else:
+        if start_time_dl.strip() or end_time_dl.strip():
+            st.warning("⚠️ 開始時間と終了時間の両方を入力するか、両方とも空欄にしてください")
+    
+    # すべての入力が有効かチェック
+    time_input_valid_dl = True
+    if (start_time_dl.strip() and not end_time_dl.strip()) or (not start_time_dl.strip() and end_time_dl.strip()):
+        time_input_valid_dl = False
+    
+    all_valid_dl = url_valid_dl and start_time_valid_dl and end_time_valid_dl and time_input_valid_dl and youtube_url_dl
+    
+    if all_valid_dl:
+        # yt-dlpコマンドを構築
+        cmd_dl = [
+            "yt-dlp",
+            "-S", "codec:avc:aac,res:1080,fps:60,hdr:sdr"
+        ]
+        
+        # クラウド環境（Streamlit Cloud、Railway等）の検出
+        is_cloud_environment_dl = False
+        try:
+            is_cloud_environment_dl = (
+                "STREAMLIT_SHARING" in os.environ or 
+                "streamlit" in os.environ.get("HOME", "").lower() or
+                "appuser" in os.environ.get("HOME", "").lower() or
+                os.path.exists("/home/appuser") or
+                "RAILWAY_ENVIRONMENT" in os.environ or
+                "PORT" in os.environ
+            )
+        except Exception:
+            pass
+        
+        # ローカル環境でのみクッキーオプションを追加
+        if not is_cloud_environment_dl:
+            try:
+                cmd_dl.extend(["--cookies-from-browser", "chrome"])
+            except Exception:
+                pass
+        
+        # 時間指定がある場合のみセクションダウンロードを追加
+        if start_time_dl.strip() and end_time_dl.strip():
+            # 時間を正規化してからダウンロードセクションの文字列を作成
+            normalized_start_dl = normalize_time_format(start_time_dl)
+            normalized_end_dl = normalize_time_format(end_time_dl)
+            download_sections_dl = f"*{normalized_start_dl}-{normalized_end_dl}"
+            cmd_dl.extend([
+                "--download-sections", download_sections_dl,
+                "--force-keyframes-at-cuts"
+            ])
+        
+        cmd_dl.extend([
+            "-f", "bv+ba",
+            "-o", "%(title)s_%(height)s_%(fps)s_%(vcodec.:4)s_(%(id)s).%(ext)s",
+            youtube_url_dl
+        ])
+        
+        # コマンド表示
+        st.subheader("実行するコマンド")
+        download_sections_for_display_dl = ""
+        if start_time_dl.strip() and end_time_dl.strip():
+            normalized_start_dl = normalize_time_format(start_time_dl)
+            normalized_end_dl = normalize_time_format(end_time_dl)
+            download_sections_for_display_dl = f"*{normalized_start_dl}-{normalized_end_dl}"
+        formatted_cmd_dl = format_command_display(cmd_dl, download_sections_for_display_dl, youtube_url_dl)
+        st.code(formatted_cmd_dl, language="bash")
+        
+        # ダウンロードボタン
+        if st.button("ダウンロード開始", type="primary", key="download_button"):
+            with st.spinner("ダウンロード中..."):
+                try:
+                    # 一意のファイル名生成のため、yt-dlpコマンドを調整
+                    temp_dir = tempfile.mkdtemp()
+                    temp_cmd_dl = cmd_dl.copy()
+                    
+                    # 一時ディレクトリに出力するように変更
+                    for i, arg in enumerate(temp_cmd_dl):
+                        if arg == "-o":
+                            temp_cmd_dl[i+1] = os.path.join(temp_dir, temp_cmd_dl[i+1])
+                            break
+                    
+                    # yt-dlpコマンドを実行
+                    result = subprocess.run(temp_cmd_dl, check=True, capture_output=True, text=True)
+                    st.success("ダウンロードが完了しました！")
+                    if result.stdout:
+                        st.text_area("出力:", result.stdout, height=200)
+                    
+                    # 一時ディレクトリからダウンロードされたファイルを取得
+                    temp_files = glob.glob(os.path.join(temp_dir, "*.mp4"))
+                    
+                    if temp_files:
+                        # 最新のファイルを取得
+                        temp_file = temp_files[0]
+                        original_name = os.path.basename(temp_file)
+                        
+                        # 現在のディレクトリで一意のファイル名を生成
+                        final_path = get_unique_filename(original_name)
+                        
+                        # ファイルを現在のディレクトリにコピー
+                        shutil.move(temp_file, final_path)
+                        
+                        # ファイルをバイナリで読み込み
+                        with open(final_path, "rb") as f:
+                            file_data = f.read()
+                        
+                        # セッション状態に保存
+                        st.session_state.downloaded_file_path = final_path
+                        st.session_state.downloaded_file_data = file_data
+                        st.session_state.downloaded_file_name = os.path.basename(final_path)
+                        
+                        # 一時ディレクトリをクリーンアップ
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    else:
+                        # 一時ディレクトリをクリーンアップ
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                        st.error("ダウンロードに失敗しました。")
+                        
+                except subprocess.CalledProcessError as e:
+                    st.error(f"エラーが発生しました: {e}")
+                    if e.stderr:
+                        st.text_area("エラー詳細:", e.stderr, height=200)
+                    # 一時ディレクトリをクリーンアップ
+                    if 'temp_dir' in locals():
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                except FileNotFoundError:
+                    st.error("yt-dlpが見つかりません。yt-dlpがインストールされているか確認してください。")
+                    # 一時ディレクトリをクリーンアップ
+                    if 'temp_dir' in locals():
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+    
+    # ダウンロードファイルがある場合、ダウンロードボタンを表示
+    if st.session_state.downloaded_file_data is not None:
         st.markdown("---")
-        st.video(f"https://www.youtube.com/watch?v={st.session_state['video_id']}")
+        st.subheader("📥 ファイルダウンロード")
+        
+        # ダウンロードボタン（クリック時に自動削除）
+        download_button_file = st.download_button(
+            label="💾 ファイルをダウンロード",
+            data=st.session_state.downloaded_file_data,
+            file_name=st.session_state.downloaded_file_name,
+            mime="video/mp4",
+            type="primary",
+            on_click=cleanup_server_file,
+            key="download_file_button"
+        )
+
 
 # Footer with debug info (開発時のみ表示)
 with st.expander("🔧 Debug Info", expanded=False):
