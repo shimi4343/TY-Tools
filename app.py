@@ -310,9 +310,9 @@ def format_command_display(cmd, download_sections, youtube_url):
     """表示用にコマンドの引数を引用符で囲む"""
     cmd_display = []
     for arg in cmd:
-        if arg == "codec:avc:aac,res:1080,fps:60,hdr:sdr":
+        if arg == "best[height<=1080]/best":
             cmd_display.append(f'"{arg}"')
-        elif arg == "bv+ba":
+        elif arg == "mp4":
             cmd_display.append(f'"{arg}"')
         elif "%(title)s_%(height)s_%(fps)s_%(vcodec.:4)s_(%(id)s)" in arg:
             cmd_display.append(f'"{arg}"')
@@ -358,8 +358,7 @@ def download_single_video_bulk(url, time_settings, progress_placeholder, error_p
         
         # コマンドを構築
         cmd = [
-            "yt-dlp",
-            "-S", "codec:avc:aac,res:1080,fps:60,hdr:sdr"
+            "yt-dlp"
         ]
         
         # クラウド環境の検出
@@ -394,7 +393,8 @@ def download_single_video_bulk(url, time_settings, progress_placeholder, error_p
         # 一時ディレクトリの設定
         temp_dir = tempfile.mkdtemp()
         cmd.extend([
-            "-f", "bv+ba",
+            "-f", "best[height<=1080]/best",
+            "--merge-output-format", "mp4",
             "-o", os.path.join(temp_dir, "%(title)s_%(height)s_%(fps)s_%(vcodec.:4)s_(%(id)s).%(ext)s"),
             url
         ])
@@ -900,8 +900,7 @@ with tab2:
     if all_valid_dl:
         # yt-dlpコマンドを構築
         cmd_dl = [
-            "yt-dlp",
-            "-S", "codec:avc:aac,res:1080,fps:60,hdr:sdr"
+            "yt-dlp"
         ]
         
         # クラウド環境（Streamlit Cloud、Railway等）の検出
@@ -937,7 +936,8 @@ with tab2:
             ])
         
         cmd_dl.extend([
-            "-f", "bv+ba",
+            "-f", "best[height<=1080]/best",
+            "--merge-output-format", "mp4",
             "-o", "%(title)s_%(height)s_%(fps)s_%(vcodec.:4)s_(%(id)s).%(ext)s",
             youtube_url_dl
         ])
