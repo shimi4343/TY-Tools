@@ -522,7 +522,7 @@ with tab2:
     
     # YouTubeのURL入力
     st.subheader("YouTubeのURL")
-    youtube_url = st.text_input("YouTubeのURLを入力してください", placeholder="https://www.youtube.com/watch?v=...", key="youtube_url_downloader")
+    youtube_url = st.text_input("YouTubeのURLを入力してください", placeholder="https://www.youtube.com/watch?v=...")
     
     # URL検証
     url_valid = True
@@ -538,7 +538,7 @@ with tab2:
     col1, col2 = st.columns(2)
     
     with col1:
-        start_time = st.text_input("開始時間", placeholder="例: 00:00, 01:30, 01:22:33, 0130, 012233（空欄で動画全体）", key="start_time_downloader")
+        start_time = st.text_input("開始時間", placeholder="例: 00:00, 01:30, 01:22:33, 0130, 012233（空欄で動画全体）")
         start_time_valid = True
         if start_time:
             if not validate_time_format(start_time):
@@ -549,7 +549,7 @@ with tab2:
                 st.success(f"有効な時間フォーマットです。({normalized_start})")
     
     with col2:
-        end_time = st.text_input("終了時間", placeholder="例: 00:10, 02:30, 01:25:45, 0230, 012545（空欄で動画全体）", key="end_time_downloader")
+        end_time = st.text_input("終了時間", placeholder="例: 00:10, 02:30, 01:25:45, 0230, 012545（空欄で動画全体）")
         end_time_valid = True
         if end_time:
             if not validate_time_format(end_time):
@@ -614,6 +614,7 @@ with tab2:
                 "--download-sections", download_sections,
                 "--force-keyframes-at-cuts"
             ])
+            
         
         cmd.extend([
             "-f", "bv+ba",
@@ -632,7 +633,7 @@ with tab2:
         st.code(formatted_cmd, language="bash")
         
         # ダウンロードボタン
-        if st.button("ダウンロード開始", type="primary", key="download_button_tab2"):
+        if st.button("ダウンロード開始", type="primary"):
             with st.spinner("ダウンロード中..."):
                 try:
                     # 一意のファイル名生成のため、yt-dlpコマンドを調整
@@ -706,8 +707,7 @@ with tab2:
             file_name=st.session_state.downloaded_file_name,
             mime="video/mp4",
             type="primary",
-            on_click=cleanup_server_file,
-            key="download_file_button_tab2"
+            on_click=lambda: cleanup_server_file()
         )
 
 
