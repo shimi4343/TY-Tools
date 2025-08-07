@@ -36,11 +36,8 @@ def _rerun() -> None:
 
 load_dotenv()
 
-# Streamlit Secretsからも読み込み可能に
-if "ANTHROPIC_API_KEY" in st.secrets:
-    api_key = st.secrets["ANTHROPIC_API_KEY"]
-else:
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+# 環境変数から読み込み（Railway環境対応）
+api_key = os.getenv("ANTHROPIC_API_KEY", "")
 
 client = anthropic.Anthropic(api_key=api_key)
 if not client.api_key:
