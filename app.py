@@ -337,6 +337,114 @@ def cleanup_server_file():
     st.session_state.downloaded_file_data = None
     st.session_state.downloaded_file_name = None
 
+def cleanup_bulk_files():
+    """バルクダウンロードファイルとセッション状態をクリーンアップ"""
+    for file_info in st.session_state.bulk_downloaded_files:
+        if file_info.get('path') and os.path.exists(file_info['path']):
+            try:
+                os.remove(file_info['path'])
+            except Exception:
+                pass
+    
+    # セッション状態をクリア
+    st.session_state.bulk_downloaded_files = []
+    st.session_state.bulk_download_progress = {}
+    st.session_state.bulk_download_errors = {}
+
+def download_single_video_bulk(url, time_settings, progress_placeholder, error_placeholder, success_placeholder):
+    """バルクダウンロード用の単一動画ダウンロード処理"""
+    try:
+        progress_placeholder.info(f"🔄 ダウンロード中: {url[:50]}...")
+        
+        # コマンドを構築
+        cmd = [
+            "yt-dlp",
+            "-S", "codec:avc:aac,res:1080,fps:60,hdr:sdr"
+        ]
+        
+        # クラウド環境の検出
+        is_cloud_environment = False
+        try:
+            is_cloud_environment = (
+                "STREAMLIT_SHARING" in os.environ or 
+                "streamlit" in os.environ.get("HOME", "").lower() or
+                "appuser" in os.environ.get("HOME", "").lower() or
+                os.path.exists("/home/appuser") or
+                "RAILWAY_ENVIRONMENT" in os.environ or
+                "PORT" in os.environ
+            )
+        except Exception:
+            pass
+        
+        # ローカル環境でのみクッキーオプションを追加
+        if not is_cloud_environment:
+            try:
+                cmd.extend(["--cookies-from-browser", "chrome"])
+            except Exception:
+                pass
+        
+        # 時間指定がある場合
+        if time_settings:
+            download_sections = f"*{time_settings['start']}-{time_settings['end']}"
+            cmd.extend([
+                "--download-sections", download_sections,
+                "--force-keyframes-at-cuts"
+            ])
+        
+        # 一時ディレクトリの設定
+        temp_dir = tempfile.mkdtemp()
+        cmd.extend([
+            "-f", "bv+ba",
+            "-o", os.path.join(temp_dir, "%(title)s_%(height)s_%(fps)s_%(vcodec.:4)s_(%(id)s).%(ext)s"),
+            url
+        ])
+        
+        # ダウンロード実行
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        
+        # ダウンロードされたファイルを確認
+        temp_files = glob.glob(os.path.join(temp_dir, "*.mp4"))
+        if temp_files:
+            temp_file = temp_files[0]
+            original_name = os.path.basename(temp_file)
+            final_path = get_unique_filename(original_name)
+            shutil.move(temp_file, final_path)
+            
+            # ファイルデータを読み込み
+            with open(final_path, "rb") as f:
+                file_data = f.read()
+            
+            # 一時ディレクトリをクリーンアップ
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            
+            success_placeholder.success(f"✅ 完了: {original_name}")
+            progress_placeholder.empty()
+            
+            return {
+                'url': url,
+                'filename': os.path.basename(final_path),
+                'path': final_path,
+                'data': file_data,
+                'success': True
+            }
+        else:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            error_msg = "ファイルのダウンロードに失敗しました"
+            error_placeholder.error(f"❌ {url[:50]}...: {error_msg}")
+            progress_placeholder.empty()
+            return {'url': url, 'success': False, 'error': error_msg}
+            
+    except subprocess.CalledProcessError as e:
+        error_msg = f"ダウンロードエラー: {e}"
+        error_placeholder.error(f"❌ {url[:50]}...: {error_msg}")
+        progress_placeholder.empty()
+        return {'url': url, 'success': False, 'error': error_msg}
+    except Exception as e:
+        error_msg = f"予期しないエラー: {str(e)}"
+        error_placeholder.error(f"❌ {url[:50]}...: {error_msg}")
+        progress_placeholder.empty()
+        return {'url': url, 'success': False, 'error': error_msg}
+
 
 # ---------------------------------------------------------------------------
 # Streamlit UI
@@ -377,6 +485,9 @@ for k, v in {
     "downloaded_file_data": None,
     "downloaded_file_name": None,
     "download_clicked": False,
+    "bulk_downloaded_files": [],
+    "bulk_download_progress": {},
+    "bulk_download_errors": {},
 }.items():
     st.session_state.setdefault(k, v)
 
@@ -518,6 +629,217 @@ with tab1:
 # Tab 2: Video Downloader
 with tab2:
     st.markdown("---")
+    
+    # ダウンロードモード選択
+    download_mode = st.radio(
+        "ダウンロードモード",
+        ["単一動画", "バルクダウンロード"],
+        horizontal=True,
+        key="download_mode"
+    )
+    
+    if download_mode == "バルクダウンロード":
+        st.subheader("📥 バルクダウンロード")
+        st.info("💡 複数のYouTube動画を一度にダウンロードできます。URL毎に時間指定も可能です。")
+        
+        # 複数URL入力
+        bulk_urls_input = st.text_area(
+            "YouTube URLリスト（1行に1つのURL）",
+            placeholder="https://www.youtube.com/watch?v=...\nhttps://youtu.be/...\nhttps://www.youtube.com/watch?v=...",
+            height=150,
+            key="bulk_urls_input"
+        )
+        
+        # URL解析とプレビュー
+        bulk_urls = []
+        if bulk_urls_input.strip():
+            urls = [url.strip() for url in bulk_urls_input.strip().split('\n') if url.strip()]
+            valid_urls = []
+            invalid_urls = []
+            
+            for url in urls:
+                if validate_youtube_url_downloader(url):
+                    valid_urls.append(url)
+                else:
+                    invalid_urls.append(url)
+            
+            if valid_urls:
+                st.success(f"✅ 有効なURL: {len(valid_urls)}件")
+                bulk_urls = valid_urls
+                
+                # URLリストのプレビューを折り畳み可能な形で表示
+                with st.expander(f"📋 ダウンロード予定リスト ({len(valid_urls)}件)", expanded=False):
+                    for i, url in enumerate(valid_urls, 1):
+                        st.text(f"{i}. {url}")
+            
+            if invalid_urls:
+                st.error(f"❌ 無効なURL: {len(invalid_urls)}件")
+                with st.expander("無効なURLを確認", expanded=False):
+                    for url in invalid_urls:
+                        st.text(f"• {url}")
+        
+        # 時間指定オプション
+        st.subheader("⏰ 時間指定オプション")
+        bulk_time_mode = st.radio(
+            "時間指定方法",
+            ["全動画とも全体をダウンロード", "全動画に同じ時間指定を適用", "URL毎に個別指定"],
+            key="bulk_time_mode"
+        )
+        
+        bulk_time_settings = {}
+        
+        if bulk_time_mode == "全動画に同じ時間指定を適用":
+            col1_bulk, col2_bulk = st.columns(2)
+            with col1_bulk:
+                global_start_time = st.text_input("開始時間（全動画共通）", placeholder="例: 00:30", key="global_start_time")
+            with col2_bulk:
+                global_end_time = st.text_input("終了時間（全動画共通）", placeholder="例: 02:00", key="global_end_time")
+            
+            # 時間フォーマット検証
+            global_time_valid = True
+            if global_start_time and not validate_time_format(global_start_time):
+                st.error("開始時間の形式が正しくありません")
+                global_time_valid = False
+            if global_end_time and not validate_time_format(global_end_time):
+                st.error("終了時間の形式が正しくありません")
+                global_time_valid = False
+            
+            if global_time_valid and global_start_time and global_end_time:
+                for url in bulk_urls:
+                    bulk_time_settings[url] = {
+                        'start': normalize_time_format(global_start_time),
+                        'end': normalize_time_format(global_end_time)
+                    }
+                st.info(f"💡 全{len(bulk_urls)}動画に {normalize_time_format(global_start_time) if global_start_time else ''} ～ {normalize_time_format(global_end_time) if global_end_time else ''} を適用")
+        
+        elif bulk_time_mode == "URL毎に個別指定" and bulk_urls:
+            st.info("各URLに対して個別に時間を指定してください（空欄の場合は全体をダウンロード）")
+            for i, url in enumerate(bulk_urls):
+                with st.expander(f"🎬 動画 {i+1}: {url[:50]}..." if len(url) > 50 else f"🎬 動画 {i+1}: {url}"):
+                    col1_indiv, col2_indiv = st.columns(2)
+                    with col1_indiv:
+                        start_time = st.text_input(f"開始時間", key=f"start_time_{i}", placeholder="例: 00:30")
+                    with col2_indiv:
+                        end_time = st.text_input(f"終了時間", key=f"end_time_{i}", placeholder="例: 02:00")
+                    
+                    # 時間指定の検証と保存
+                    if start_time or end_time:
+                        time_valid = True
+                        if start_time and not validate_time_format(start_time):
+                            st.error("開始時間の形式が正しくありません")
+                            time_valid = False
+                        if end_time and not validate_time_format(end_time):
+                            st.error("終了時間の形式が正しくありません")
+                            time_valid = False
+                        
+                        if time_valid and start_time and end_time:
+                            bulk_time_settings[url] = {
+                                'start': normalize_time_format(start_time),
+                                'end': normalize_time_format(end_time)
+                            }
+                            st.success(f"✅ {normalize_time_format(start_time)} ～ {normalize_time_format(end_time)}")
+                        elif start_time or end_time:
+                            st.warning("開始時間と終了時間の両方を入力してください")
+        
+        # バルクダウンロード実行ボタン
+        if bulk_urls:
+            st.markdown("---")
+            if st.button("🚀 バルクダウンロード開始", type="primary", key="bulk_download_button"):
+                # 既存のバルクファイルをクリーンアップ
+                cleanup_bulk_files()
+                
+                # プログレス表示エリアを準備
+                progress_container = st.container()
+                overall_progress = progress_container.progress(0)
+                status_text = progress_container.empty()
+                
+                # 各動画のステータス表示用プレースホルダー
+                video_status_placeholders = []
+                for i in range(len(bulk_urls)):
+                    video_status_placeholders.append({
+                        'progress': progress_container.empty(),
+                        'error': progress_container.empty(),
+                        'success': progress_container.empty()
+                    })
+                
+                successful_downloads = []
+                total_videos = len(bulk_urls)
+                
+                # 各動画を順次ダウンロード
+                for i, url in enumerate(bulk_urls):
+                    status_text.text(f"📹 進行状況: {i+1}/{total_videos} - {url[:50]}...")
+                    
+                    # この動画の時間設定を取得
+                    time_settings = bulk_time_settings.get(url, None)
+                    
+                    # ダウンロード実行
+                    result = download_single_video_bulk(
+                        url, 
+                        time_settings, 
+                        video_status_placeholders[i]['progress'],
+                        video_status_placeholders[i]['error'],
+                        video_status_placeholders[i]['success']
+                    )
+                    
+                    if result['success']:
+                        successful_downloads.append(result)
+                        st.session_state.bulk_downloaded_files.append(result)
+                    
+                    # 全体プログレスを更新
+                    overall_progress.progress((i + 1) / total_videos)
+                
+                # 完了メッセージ
+                if successful_downloads:
+                    status_text.success(f"🎉 バルクダウンロード完了! 成功: {len(successful_downloads)}/{total_videos}")
+                    
+                    # ダウンロードリンクの表示
+                    st.markdown("---")
+                    st.subheader("📦 ダウンロード済みファイル")
+                    
+                    # 全てのファイルをZIP化してダウンロード
+                    if len(successful_downloads) > 1:
+                        import zipfile
+                        import io
+                        
+                        zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                            for file_info in successful_downloads:
+                                zip_file.writestr(file_info['filename'], file_info['data'])
+                        
+                        zip_buffer.seek(0)
+                        st.download_button(
+                            label="📦 全てのファイルをZIPでダウンロード",
+                            data=zip_buffer.getvalue(),
+                            file_name="youtube_videos_bulk.zip",
+                            mime="application/zip",
+                            type="primary",
+                            on_click=cleanup_bulk_files,
+                            key="download_all_zip"
+                        )
+                        st.markdown("---")
+                    
+                    # 個別ファイルダウンロード
+                    for i, file_info in enumerate(successful_downloads):
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            st.text(f"📹 {file_info['filename']}")
+                        with col2:
+                            st.download_button(
+                                label="💾",
+                                data=file_info['data'],
+                                file_name=file_info['filename'],
+                                mime="video/mp4",
+                                key=f"download_individual_{i}"
+                            )
+                else:
+                    status_text.error("❌ すべてのダウンロードに失敗しました。エラーメッセージを確認してください。")
+        
+        st.markdown("---")
+        st.markdown("### または単一動画をダウンロード")
+    
+    # 単一動画ダウンロード（既存の機能）
+    if download_mode == "単一動画":
+        st.subheader("📹 単一動画ダウンロード")
     
     # YouTubeのURL入力
     st.subheader("YouTubeのURL")
