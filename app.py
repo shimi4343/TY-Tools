@@ -1,10 +1,11 @@
 """
-Streamlit WebApp: Script Writer with yt-dlp (Fixed)
-Author: Modified for yt-dlp
-Date: 2025-01-16 (fixed version)
+Streamlit WebApp: Script Writer with yt-dlp (Fixed Audio)
+Author: Modified for yt-dlp with audio support
+Date: 2025-01-16 (fixed audio version)
 
 主な修正点:
-- yt-dlpのオプション設定を修正
+- Video Downloaderタブの音声問題を修正
+- yt-dlpのオプション設定を改善
 - 字幕取得ロジックを改善
 - デバッグ情報の追加
 """
@@ -258,7 +259,7 @@ def translate_to_japanese(text: str, source_lang: str = "en") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Video Downloader Functions
+# Video Downloader Functions (streamlit_app.pyから移植した正常動作版)
 # ---------------------------------------------------------------------------
 
 def validate_time_format(time_str):
@@ -282,7 +283,7 @@ def normalize_time_format(time_str):
         # すでに正しい形式の場合はそのまま返す
         return time_str
 
-def validate_youtube_url_downloader(url):
+def validate_youtube_url(url):
     """YouTubeのURLを検証"""
     youtube_patterns = [
         r'https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+',
@@ -336,7 +337,6 @@ def cleanup_server_file():
     st.session_state.downloaded_file_path = None
     st.session_state.downloaded_file_data = None
     st.session_state.downloaded_file_name = None
-
 
 
 # ---------------------------------------------------------------------------
@@ -516,77 +516,77 @@ with tab1:
             st.video(f"https://www.youtube.com/watch?v={st.session_state['video_id']}")
 
 
-# Tab 2: Video Downloader
+# Tab 2: Video Downloader (streamlit_app.pyから移植した正常動作版)
 with tab2:
     st.markdown("---")
     
     # YouTubeのURL入力
     st.subheader("YouTubeのURL")
-    youtube_url_dl = st.text_input("YouTubeのURLを入力してください", placeholder="https://www.youtube.com/watch?v=...", key="youtube_url_dl")
+    youtube_url = st.text_input("YouTubeのURLを入力してください", placeholder="https://www.youtube.com/watch?v=...", key="youtube_url_downloader")
     
     # URL検証
-    url_valid_dl = True
-    if youtube_url_dl:
-        if not validate_youtube_url_downloader(youtube_url_dl):
+    url_valid = True
+    if youtube_url:
+        if not validate_youtube_url(youtube_url):
             st.error("無効なYouTubeのURLです。正しいURLを入力してください。")
-            url_valid_dl = False
+            url_valid = False
         else:
             st.success("有効なYouTubeのURLです。")
     
     # 時間入力
     st.subheader("ダウンロード区間")
-    col1_dl, col2_dl = st.columns(2)
+    col1, col2 = st.columns(2)
     
-    with col1_dl:
-        start_time_dl = st.text_input("開始時間", placeholder="例: 00:00, 01:30, 01:22:33, 0130, 012233（空欄で動画全体）", key="start_time_dl")
-        start_time_valid_dl = True
-        if start_time_dl:
-            if not validate_time_format(start_time_dl):
+    with col1:
+        start_time = st.text_input("開始時間", placeholder="例: 00:00, 01:30, 01:22:33, 0130, 012233（空欄で動画全体）", key="start_time_downloader")
+        start_time_valid = True
+        if start_time:
+            if not validate_time_format(start_time):
                 st.error("無効な時間フォーマットです。00:00、01:22:33、0130、012233の形式で入力してください。")
-                start_time_valid_dl = False
+                start_time_valid = False
             else:
-                normalized_start_dl = normalize_time_format(start_time_dl)
-                st.success(f"有効な時間フォーマットです。({normalized_start_dl})")
+                normalized_start = normalize_time_format(start_time)
+                st.success(f"有効な時間フォーマットです。({normalized_start})")
     
-    with col2_dl:
-        end_time_dl = st.text_input("終了時間", placeholder="例: 00:10, 02:30, 01:25:45, 0230, 012545（空欄で動画全体）", key="end_time_dl")
-        end_time_valid_dl = True
-        if end_time_dl:
-            if not validate_time_format(end_time_dl):
+    with col2:
+        end_time = st.text_input("終了時間", placeholder="例: 00:10, 02:30, 01:25:45, 0230, 012545（空欄で動画全体）", key="end_time_downloader")
+        end_time_valid = True
+        if end_time:
+            if not validate_time_format(end_time):
                 st.error("無効な時間フォーマットです。00:00、01:22:33、0130、012233の形式で入力してください。")
-                end_time_valid_dl = False
+                end_time_valid = False
             else:
-                normalized_end_dl = normalize_time_format(end_time_dl)
-                st.success(f"有効な時間フォーマットです。({normalized_end_dl})")
+                normalized_end = normalize_time_format(end_time)
+                st.success(f"有効な時間フォーマットです。({normalized_end})")
     
     # 時間指定の状態を表示
-    if not start_time_dl.strip() and not end_time_dl.strip():
+    if not start_time.strip() and not end_time.strip():
         st.info("💡 時間指定なし：動画全体をダウンロードします")
-    elif start_time_dl.strip() and end_time_dl.strip():
-        if start_time_valid_dl and end_time_valid_dl:
-            st.info(f"💡 指定区間：{normalize_time_format(start_time_dl) if start_time_dl else ''} ～ {normalize_time_format(end_time_dl) if end_time_dl else ''}")
+    elif start_time.strip() and end_time.strip():
+        if start_time_valid and end_time_valid:
+            st.info(f"💡 指定区間：{normalize_time_format(start_time) if start_time else ''} ～ {normalize_time_format(end_time) if end_time else ''}")
     else:
-        if start_time_dl.strip() or end_time_dl.strip():
+        if start_time.strip() or end_time.strip():
             st.warning("⚠️ 開始時間と終了時間の両方を入力するか、両方とも空欄にしてください")
     
     # すべての入力が有効かチェック
-    time_input_valid_dl = True
-    if (start_time_dl.strip() and not end_time_dl.strip()) or (not start_time_dl.strip() and end_time_dl.strip()):
-        time_input_valid_dl = False
+    time_input_valid = True
+    if (start_time.strip() and not end_time.strip()) or (not start_time.strip() and end_time.strip()):
+        time_input_valid = False
     
-    all_valid_dl = url_valid_dl and start_time_valid_dl and end_time_valid_dl and time_input_valid_dl and youtube_url_dl
+    all_valid = url_valid and start_time_valid and end_time_valid and time_input_valid and youtube_url
     
-    if all_valid_dl:
+    if all_valid:
         # yt-dlpコマンドを構築
-        cmd_dl = [
+        cmd = [
             "yt-dlp",
             "-S", "codec:avc:aac,res:1080,fps:60,hdr:sdr"
         ]
         
         # クラウド環境（Streamlit Cloud、Railway等）の検出
-        is_cloud_environment_dl = False
+        is_cloud_environment = False
         try:
-            is_cloud_environment_dl = (
+            is_cloud_environment = (
                 "STREAMLIT_SHARING" in os.environ or 
                 "streamlit" in os.environ.get("HOME", "").lower() or
                 "appuser" in os.environ.get("HOME", "").lower() or
@@ -598,55 +598,55 @@ with tab2:
             pass
         
         # ローカル環境でのみクッキーオプションを追加
-        if not is_cloud_environment_dl:
+        if not is_cloud_environment:
             try:
-                cmd_dl.extend(["--cookies-from-browser", "chrome"])
+                cmd.extend(["--cookies-from-browser", "chrome"])
             except Exception:
                 pass
         
         # 時間指定がある場合のみセクションダウンロードを追加
-        if start_time_dl.strip() and end_time_dl.strip():
+        if start_time.strip() and end_time.strip():
             # 時間を正規化してからダウンロードセクションの文字列を作成
-            normalized_start_dl = normalize_time_format(start_time_dl)
-            normalized_end_dl = normalize_time_format(end_time_dl)
-            download_sections_dl = f"*{normalized_start_dl}-{normalized_end_dl}"
-            cmd_dl.extend([
-                "--download-sections", download_sections_dl,
+            normalized_start = normalize_time_format(start_time)
+            normalized_end = normalize_time_format(end_time)
+            download_sections = f"*{normalized_start}-{normalized_end}"
+            cmd.extend([
+                "--download-sections", download_sections,
                 "--force-keyframes-at-cuts"
             ])
         
-        cmd_dl.extend([
+        cmd.extend([
             "-f", "bv+ba",
             "-o", "%(title)s_%(height)s_%(fps)s_%(vcodec.:4)s_(%(id)s).%(ext)s",
-            youtube_url_dl
+            youtube_url
         ])
         
         # コマンド表示
         st.subheader("実行するコマンド")
-        download_sections_for_display_dl = ""
-        if start_time_dl.strip() and end_time_dl.strip():
-            normalized_start_dl = normalize_time_format(start_time_dl)
-            normalized_end_dl = normalize_time_format(end_time_dl)
-            download_sections_for_display_dl = f"*{normalized_start_dl}-{normalized_end_dl}"
-        formatted_cmd_dl = format_command_display(cmd_dl, download_sections_for_display_dl, youtube_url_dl)
-        st.code(formatted_cmd_dl, language="bash")
+        download_sections_for_display = ""
+        if start_time.strip() and end_time.strip():
+            normalized_start = normalize_time_format(start_time)
+            normalized_end = normalize_time_format(end_time)
+            download_sections_for_display = f"*{normalized_start}-{normalized_end}"
+        formatted_cmd = format_command_display(cmd, download_sections_for_display, youtube_url)
+        st.code(formatted_cmd, language="bash")
         
         # ダウンロードボタン
-        if st.button("ダウンロード開始", type="primary", key="download_button"):
+        if st.button("ダウンロード開始", type="primary", key="download_button_tab2"):
             with st.spinner("ダウンロード中..."):
                 try:
                     # 一意のファイル名生成のため、yt-dlpコマンドを調整
                     temp_dir = tempfile.mkdtemp()
-                    temp_cmd_dl = cmd_dl.copy()
+                    temp_cmd = cmd.copy()
                     
                     # 一時ディレクトリに出力するように変更
-                    for i, arg in enumerate(temp_cmd_dl):
+                    for i, arg in enumerate(temp_cmd):
                         if arg == "-o":
-                            temp_cmd_dl[i+1] = os.path.join(temp_dir, temp_cmd_dl[i+1])
+                            temp_cmd[i+1] = os.path.join(temp_dir, temp_cmd[i+1])
                             break
                     
                     # yt-dlpコマンドを実行
-                    result = subprocess.run(temp_cmd_dl, check=True, capture_output=True, text=True)
+                    result = subprocess.run(temp_cmd, check=True, capture_output=True, text=True)
                     st.success("ダウンロードが完了しました！")
                     if result.stdout:
                         st.text_area("出力:", result.stdout, height=200)
@@ -700,14 +700,14 @@ with tab2:
         st.subheader("📥 ファイルダウンロード")
         
         # ダウンロードボタン（クリック時に自動削除）
-        download_button_file = st.download_button(
+        download_button = st.download_button(
             label="💾 ファイルをダウンロード",
             data=st.session_state.downloaded_file_data,
             file_name=st.session_state.downloaded_file_name,
             mime="video/mp4",
             type="primary",
             on_click=cleanup_server_file,
-            key="download_file_button"
+            key="download_file_button_tab2"
         )
 
 
@@ -719,6 +719,9 @@ with st.expander("🔧 Debug Info", expanded=False):
     
     # yt-dlpのバージョンが古い場合の警告
     if hasattr(yt_dlp.version, '__version__'):
-        import packaging.version
-        if packaging.version.parse(yt_dlp.version.__version__) < packaging.version.parse("2024.0.0"):
-            st.warning("⚠️ yt-dlpのバージョンが古い可能性があります。最新版へのアップデートを推奨します: `pip install -U yt-dlp`")
+        try:
+            import packaging.version
+            if packaging.version.parse(yt_dlp.version.__version__) < packaging.version.parse("2024.0.0"):
+                st.warning("⚠️ yt-dlpのバージョンが古い可能性があります。最新版へのアップデートを推奨します: `pip install -U yt-dlp`")
+        except ImportError:
+            pass  # packagingがインストールされていない場合は警告をスキップ
