@@ -598,11 +598,11 @@ with tab2:
             pass
         
         # ローカル環境でのみクッキーオプションを追加
-        if not is_cloud_environment:
-            try:
-                cmd.extend(["--cookies-from-browser", "chrome"])
-            except Exception:
-                pass
+        #　if not is_cloud_environment:
+        #    try:
+        #        cmd.extend(["--cookies-from-browser", "chrome"])
+        #    except Exception:
+        #        pass
         
         # 時間指定がある場合のみセクションダウンロードを追加
         if start_time.strip() and end_time.strip():

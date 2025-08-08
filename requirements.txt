@@ -2,4 +2,3 @@ streamlit
 yt-dlp
 anthropic
 python-dotenv
-ffmpeg-python
