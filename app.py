@@ -22,9 +22,10 @@ if st.button("ダウンロード", type="primary", disabled=not url):
                 # 一時ディレクトリを作成
                 temp_dir = tempfile.mkdtemp()
                 
-                # yt-dlpコマンドを実行
+                # yt-dlpコマンドを実行（1080p webm形式）
                 cmd = [
                     "yt-dlp",
+                    "-f", "bestvideo[height<=1080][ext=webm]+bestaudio[ext=webm]/best[height<=1080][ext=webm]",
                     "-o", os.path.join(temp_dir, "%(title)s.%(ext)s"),
                     url
                 ]
@@ -66,5 +67,6 @@ if st.session_state.downloaded_file:
         label="💾 ファイルをダウンロード",
         data=st.session_state.downloaded_file['data'],
         file_name=st.session_state.downloaded_file['name'],
+        mime="video/webm",
         type="primary"
     )
