@@ -19,9 +19,11 @@ if st.button("ダウンロード", type="primary", disabled=not url):
                 # 一時ディレクトリを作成
                 temp_dir = tempfile.mkdtemp()
                 
-                # yt-dlpコマンドを実行
+                # yt-dlpコマンドを実行（1080p高画質）
                 cmd = [
                     "yt-dlp",
+                    "-f", "best[height<=1080]/bestvideo[height<=1080]+bestaudio/best",
+                    "--merge-output-format", "mp4",
                     "-o", os.path.join(temp_dir, "%(title)s.%(ext)s"),
                     url
                 ]
@@ -43,6 +45,7 @@ if st.button("ダウンロード", type="primary", disabled=not url):
                         label="💾 ファイルをダウンロード",
                         data=file_data,
                         file_name=files[0],
+                        mime="video/mp4",
                         type="primary"
                     )
                 else:
