@@ -55,8 +55,19 @@ if not client.api_key:
 # ---------------------------------------------------------------------------
 
 def get_ydl_opts() -> Dict[str, Any]:
-    """yt-dlpのオプションを返す（修正版）"""
+    """yt-dlpのオプションを返す（bot detection回避版）"""
+    import random
+    
     temp_dir = tempfile.gettempdir()
+    
+    # User-Agentをランダムに選択してbot検出を回避
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0'
+    ]
     
     return {
         'quiet': True,
@@ -66,18 +77,31 @@ def get_ydl_opts() -> Dict[str, Any]:
         'subtitleslangs': ['en', 'en-US', 'en-GB', 'a.en'],  # 'a.en'は自動生成英語字幕
         'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
         'cachedir': temp_dir,
-        'socket_timeout': 30,
-        'retries': 3,
-        'fragment_retries': 3,
+        'socket_timeout': 60,  # タイムアウトを延長
+        'retries': 5,  # リトライ回数を増加
+        'fragment_retries': 5,
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
+            'User-Agent': random.choice(user_agents),
+            'Accept-Language': 'en-US,en;q=0.9,ja;q=0.8',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Encoding': 'gzip, deflate',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
         },
         'no_color': True,
         # 自動生成字幕を明示的に有効化
         'writeautomaticsub': False,  # 実際にファイルに書き込まない
         'allsubtitles': False,
         'writesubtitles': False,
+        # bot detection回避のための追加オプション
+        'extractor_retries': 3,
+        'sleep_interval': 1,
+        'max_sleep_interval': 5,
+        'sleep_interval_subtitles': 0,
     }
 
 # ---------------------------------------------------------------------------
@@ -112,18 +136,31 @@ def parse_subtitle_json(subtitle_data: List[Dict[str, Any]]) -> str:
 @st.cache_data(show_spinner=False, ttl=3600)  # 1時間キャッシュ
 def fetch_english_transcript_ytdlp(video_id: str) -> tuple[str, str, str]:
     """
-    yt-dlpを使って字幕を取得（修正版）
+    yt-dlpを使って字幕を取得（リトライ機能付き）
     Returns: (transcript_text, error_message, language_code)
     """
-    try:
-        ydl_opts = get_ydl_opts()
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # 動画情報を取得
-            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+    import time
+    
+    max_retries = 3
+    base_delay = 2
+    
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                delay = base_delay * (2 ** (attempt - 1))  # 指数バックオフ
+                time.sleep(delay)
+                st.info(f"リトライ中... ({attempt + 1}/{max_retries})")
             
-            if not info:
-                return "", "動画情報を取得できませんでした。", ""
+            ydl_opts = get_ydl_opts()
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # 動画情報を取得
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                
+                if not info:
+                    if attempt < max_retries - 1:
+                        continue
+                    return "", "動画情報を取得できませんでした。", ""
             
             # デバッグ情報を取得
             subtitles = info.get('subtitles', {})
@@ -227,6 +264,10 @@ def fetch_english_transcript_ytdlp(video_id: str) -> tuple[str, str, str]:
             return "", "動画が利用できません。非公開または削除されている可能性があります。", ""
         elif "Sign in to confirm your age" in error_msg:
             return "", "年齢制限のある動画です。字幕を取得できません。", ""
+        elif "Sign in to confirm you're not a bot" in error_msg or "bot" in error_msg.lower():
+            return "", "YouTube側でbot検出が発生しました。しばらく時間をおいてから再度お試しください。または「英語字幕を直接入力」オプションをご利用ください。", ""
+        elif "HTTP Error 429" in error_msg:
+            return "", "リクエスト制限に達しました。しばらく時間をおいてから再度お試しください。", ""
         else:
             return "", f"ダウンロードエラー: {error_msg}", ""
     except json.JSONDecodeError:
@@ -321,6 +362,9 @@ def format_command_display(cmd, download_sections, youtube_url):
             cmd_display.append(f'"{arg}"')
         elif arg == youtube_url:
             cmd_display.append(f'"{arg}"')
+        elif arg in ["chrome", "firefox", "edge", "safari"]:
+            # ブラウザ名もそのまま表示
+            cmd_display.append(arg)
         else:
             cmd_display.append(arg)
     return " ".join(cmd_display)
@@ -597,12 +641,17 @@ with tab2:
         except Exception:
             pass
         
-        # ローカル環境でのみクッキーオプションを追加
-        #　if not is_cloud_environment:
-        #    try:
-        #        cmd.extend(["--cookies-from-browser", "chrome"])
-        #    except Exception:
-        #        pass
+        # クッキー認証を追加（bot検出回避のため）
+        try:
+            cmd.extend(["--cookies-from-browser", "chrome"])
+        except Exception:
+            # Chromeが利用できない場合は他のブラウザも試す
+            for browser in ["firefox", "edge", "safari"]:
+                try:
+                    cmd.extend(["--cookies-from-browser", browser])
+                    break
+                except Exception:
+                    continue
         
         # 時間指定がある場合のみセクションダウンロードを追加
         if start_time.strip() and end_time.strip():
