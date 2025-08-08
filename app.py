@@ -7,9 +7,6 @@ import streamlit as st
 st.set_page_config(page_title="Simple YouTube Downloader", layout="centered", page_icon="📹")
 st.title("📹 Simple YouTube Downloader")
 
-# セッション状態の初期化
-if 'downloaded_file' not in st.session_state:
-    st.session_state.downloaded_file = None
 
 # URL入力
 url = st.text_input("YouTube URLを入力してください:", placeholder="https://www.youtube.com/watch?v=...")
@@ -22,10 +19,9 @@ if st.button("ダウンロード", type="primary", disabled=not url):
                 # 一時ディレクトリを作成
                 temp_dir = tempfile.mkdtemp()
                 
-                # yt-dlpコマンドを実行（1080p webm形式）
+                # yt-dlpコマンドを実行
                 cmd = [
                     "yt-dlp",
-                    "-f", "bestvideo[height<=1080][ext=webm]+bestaudio[ext=webm]/best[height<=1080][ext=webm]",
                     "-o", os.path.join(temp_dir, "%(title)s.%(ext)s"),
                     url
                 ]
@@ -41,13 +37,14 @@ if st.button("ダウンロード", type="primary", disabled=not url):
                     with open(file_path, "rb") as f:
                         file_data = f.read()
                     
-                    # セッション状態に保存
-                    st.session_state.downloaded_file = {
-                        'data': file_data,
-                        'name': files[0]
-                    }
-                    
+                    # 即座にダウンロード開始
                     st.success("ダウンロードが完了しました！")
+                    st.download_button(
+                        label="💾 ファイルをダウンロード",
+                        data=file_data,
+                        file_name=files[0],
+                        type="primary"
+                    )
                 else:
                     st.error("ファイルが見つかりませんでした。")
                 
@@ -60,13 +57,3 @@ if st.button("ダウンロード", type="primary", disabled=not url):
                     st.text_area("詳細:", e.stderr, height=100)
             except FileNotFoundError:
                 st.error("yt-dlpがインストールされていません。")
-
-# ダウンロードファイルがある場合、ダウンロードボタンを表示
-if st.session_state.downloaded_file:
-    st.download_button(
-        label="💾 ファイルをダウンロード",
-        data=st.session_state.downloaded_file['data'],
-        file_name=st.session_state.downloaded_file['name'],
-        mime="video/webm",
-        type="primary"
-    )
